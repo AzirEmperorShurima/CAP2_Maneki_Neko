@@ -1,6 +1,7 @@
 import Category from "../models/category.js";
 import Transaction from "../models/transaction.js";
 import user from "../models/user.js";
+import { validateCreateTransaction } from "../validations/transaction.js";
 
 import * as transactionService from '../services/transactions/analytics/transactionAlalytics.js';
 
@@ -35,7 +36,15 @@ export const correctTransaction = async (req, res) => {
 // create new a transaction in basic type
 export const createTransaction = async (req, res) => {
     try {
-        const { amount, type, date, description, isShared, categoryId } = req.body;
+        const { error, value } = validateCreateTransaction(req.body);
+        if (error) {
+            return res.status(400).json({
+                error: 'Invalid payload',
+                details: error.details.map(d => ({ field: d.path.join('.'), message: d.message }))
+            });
+        }
+
+        const { amount, type, date, description, isShared, categoryId } = value;
         const _user = await user.findById(req.userId);
         if (!_user) return res.status(404).json({ error: 'User không tồn tại' });
 
