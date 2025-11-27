@@ -1,0 +1,32 @@
+{
+  "name": "maneki_neko",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "nodemon --exec node --env-file=.env --watch --trace-deprecation index.js",
+    "start": "node --env-file=.env --watch index.js",
+    "dev": "node --watch index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@faker-js/faker": "^10.1.0",
+    "@google/genai": "^1.28.0",
+    "compression": "^1.8.1",
+    "cors": "^2.8.5",
+    "dayjs": "^1.11.19",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.2.0",
+    "express-validator": "^7.3.0",
+    "google-auth-library": "^10.4.2",
+    "helmet": "^8.1.0",
+    "http-status-codes": "^2.3.0",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.19.2",
+    "morgan": "^1.10.1",
+    "nodemailer": "^7.0.10"
+  }
+}

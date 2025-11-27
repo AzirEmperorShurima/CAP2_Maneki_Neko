@@ -1,0 +1,1 @@
+export const googleAppClientId = process.env.GOOGLE_CLIENT_ID;
