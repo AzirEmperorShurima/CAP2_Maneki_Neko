@@ -1,10 +1,21 @@
 // Update file: controllers/family.js
 import Family from '../models/family.js';
 import User from '../models/user.js';
-import Transaction from '../models/transaction.js';
-import Budget from '../models/budget.js';
-import dayjs from 'dayjs';  // For handling expiresAt
-import { InviteEmail, transporter } from '../utils/mail.js';
+import { sendFamilyInviteEmail } from '../services/mail/sendMailService.js';
+import { themedPage } from '../utils/webTheme.js';
+import { StatusCodes } from 'http-status-codes';
+import dayjs from 'dayjs';
+
+// async function generateInviteCode() {
+//     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+//     const len = 8;
+//     for (; ;) {
+//         let code = '';
+//         for (let i = 0; i < len; i++) code += chars[Math.floor(Math.random() * chars.length)];
+//         const exists = await Family.findOne({ inviteCode: code }).lean();
+//         if (!exists) return code;
+//     }
+// }
 
 export const createFamily = async (req, res) => {
     const { name } = req.body;
@@ -23,10 +34,12 @@ export const createFamily = async (req, res) => {
             });
         }
 
+        const inviteCode = await generateInviteCode();
         const family = new Family({
             name: name.trim(),
             adminId: req.userId,
-            members: [req.userId]
+            members: [req.userId],
+            inviteCode,
         });
 
         await family.save();
@@ -62,7 +75,11 @@ export const generateInviteLink = async (req, res) => {
     if (!user.familyId || !user.isFamilyAdmin) return res.status(403).json({ error: 'Chỉ admin mới tạo link mời' });
 
     const family = await Family.findById(user.familyId);
-    const inviteLink = `${process.env.APP_URL}/join?familyCode=${family.inviteCode}`;  // e.g., http://yourapp.com/join?familyCode=abc123
+    if (!family.inviteCode) {
+        family.inviteCode = await generateInviteCode();
+        await family.save();
+    }
+    const inviteLink = `${process.env.APP_URL}/join?familyCode=${family.inviteCode}`;
 
     res.json({ message: 'Link mời đã tạo', inviteLink });
 };
@@ -78,6 +95,7 @@ export const sendInviteEmail = async (req, res) => {
 
     const family = await Family.findById(admin.familyId);
     if (!family) return res.status(404).json({ error: 'Không tìm thấy gia đình' });
+    if (!family.isActive) return res.status(400).json({ error: 'Gia đình đã bị vô hiệu hóa' });
 
     // Kiểm tra đã là thành viên chưa
     const existingMember = await User.findOne({ email, familyId: family._id });
@@ -101,54 +119,6 @@ export const sendInviteEmail = async (req, res) => {
     // Kiểm tra user đã tồn tại chưa
     const userExists = await User.findOne({ email });
 
-    const mailOptions = {
-        from: process.env.EMAIL_USER,
-        to: email,
-        subject: `Mời tham gia gia đình "${family.name}"`,
-        html: `
-          <div style="background: linear-gradient(135deg, #7c3aed, #ec4899); padding: 24px; font-family: Arial, sans-serif;">
-            <div style="max-width: 640px; margin: 0 auto;">
-              <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="background: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 10px 24px rgba(124, 58, 237, 0.25);">
-                <tr>
-                  <td style="padding: 0;">
-                    <div style="background: linear-gradient(135deg, #8b5cf6, #f472b6); color: #ffffff; text-align: center; padding: 28px 16px;">
-                      <div style="font-size: 14px; letter-spacing: 1px; opacity: 0.9;">MANEKI NEKO</div>
-                      <h2 style="margin: 8px 0 0; font-size: 24px; line-height: 1.4;">Lời mời tham gia gia đình</h2>
-                    </div>
-                  </td>
-                </tr>
-                <tr>
-                  <td style="padding: 24px 24px 8px; color: #374151; font-size: 15px;">
-                    <p style="margin: 0 0 10px;">Xin chào,</p>
-                    <p style="margin: 0 0 12px;">
-                      <strong>${admin.username}</strong> đã mời bạn tham gia gia đình <strong>"${family.name}"</strong> trên ứng dụng <strong>Maneki Neko</strong>.
-                    </p>
-                    <p style="margin: 0 0 20px; color: #6b7280;">Kết nối để chia sẻ chi tiêu, thiết lập ngân sách và quản lý tài chính thông minh cùng gia đình.</p>
-                  </td>
-                </tr>
-                <tr>
-                  <td style="padding: 0 24px 24px; text-align: center;">
-                    <a href="${webJoinLink}"
-                       style="display: inline-block; text-decoration: none; background: linear-gradient(135deg, #7c3aed, #ec4899); color: #ffffff; padding: 14px 28px; border-radius: 9999px; font-weight: bold; font-size: 16px; box-shadow: 0 8px 16px rgba(236, 72, 153, 0.35);">
-                      ${userExists ? 'Tham gia ngay' : 'Đăng nhập & tham gia'}
-                    </a>
-                    <div style="margin-top: 12px; font-size: 13px; color: #9ca3af;">Nếu nút không hoạt động, hãy mở liên kết: <br/>
-                      <a href="${webJoinLink}" style="color: #7c3aed; text-decoration: underline;">${webJoinLink}</a>
-                    </div>
-                  </td>
-                </tr>
-                <tr>
-                  <td style="padding: 0 24px 24px;">
-                    <div style="border-top: 1px solid #f1f5f9; padding-top: 16px; text-align: center;">
-                      <span style="display: inline-block; color: #6b7280; font-size: 12px;">Lời mời hết hạn sau 7 ngày.</span>
-                    </div>
-                  </td>
-                </tr>
-              </table>
-            </div>
-          </div>
-        `
-    };
     res.json({
         success: true,
         message: 'Đã gửi lời mời',
@@ -157,22 +127,21 @@ export const sendInviteEmail = async (req, res) => {
         userExists: !!userExists
     });
     setImmediate(() => {
-        transporter.sendMail(mailOptions);
+        const adminName = admin.username || admin.email;
+        const familyName = family.name;
+        sendFamilyInviteEmail({
+            to: email,
+            adminName,
+            familyName,
+            webJoinLink,
+            deepLink,
+            userExists: !!userExists,
+        }).catch(() => { });
     });
 };
 
 export const joinFamilyWeb = async (req, res) => {
     const { familyCode, email } = req.query;
-
-    const themedPage = (inner) => `
-      <div style="background:linear-gradient(135deg,#7c3aed,#ec4899);padding:32px;font-family:Arial,sans-serif">
-        <div style="max-width:640px;margin:auto;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 12px 28px rgba(124,58,237,0.25)">
-          <div style="background:linear-gradient(135deg,#8b5cf6,#f472b6);color:#ffffff;text-align:center;padding:24px 16px">
-            <div style="font-size:12px;letter-spacing:1px;opacity:.9">MANEKI NEKO</div>
-          </div>
-          <div style="padding:24px">${inner}</div>
-        </div>
-      </div>`;
 
     if (!familyCode || !email || !/^\S+@\S+\.\S+$/.test(email)) {
         return res.status(400).send(themedPage(`
@@ -195,6 +164,12 @@ export const joinFamilyWeb = async (req, res) => {
                 <div style="text-align:center;margin-top:16px">
                   <a href="/" style="color:#7c3aed;text-decoration:underline">Quay lại trang chủ</a>
                 </div>
+            `));
+        }
+        if (!family.isActive) {
+            return res.status(400).send(themedPage(`
+                <h2 style="margin:0 0 8px;color:#ef4444;text-align:center">Gia đình đã bị vô hiệu hóa</h2>
+                <p style="color:#6b7280;text-align:center">Không thể tham gia vào lúc này.</p>
             `));
         }
 
@@ -329,4 +304,67 @@ export const getFamilyMembers = async (req, res) => {
 
     const family = await Family.findById(user.familyId).populate('members', 'username email avatar');
     res.json(family.members);
+};
+
+export const dissolveFamily = async (req, res) => {
+    const user = await User.findById(req.userId);
+    try {
+        if (!user.familyId) return res.status(StatusCodes.BAD_REQUEST).json({ error: 'Bạn chưa tham gia nhóm nào' });
+
+        const family = await Family.findById(user.familyId);
+        if (family.adminId.toString() !== req.userId.toString()) return res.status(StatusCodes.FORBIDDEN).json({ error: 'Chỉ có admin mới có thể phá hủy nhóm' });
+
+        await Family.deleteOne({ _id: family._id });
+        await User.updateMany({ familyId: family._id }, { familyId: null, isFamilyAdmin: false });
+
+        res.status(StatusCodes.OK).json({ message: 'Đã phá hủy nhóm gia đình' });
+    } catch (err) {
+        console.error('Lỗi dissolve family:', err);
+        res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ error: 'Lỗi hệ thống' });
+    }
+};
+
+export const updateSharingSettings = async (req, res) => {
+    const userDoc = await User.findById(req.userId);
+    if (!userDoc?.familyId) return res.status(400).json({ error: 'Bạn chưa tham gia nhóm nào' });
+    const family = await Family.findById(userDoc.familyId);
+    if (family.adminId.toString() !== req.userId.toString()) return res.status(403).json({ error: 'Chỉ admin mới chỉnh chia sẻ' });
+    const { transactionVisibility, walletVisibility, goalVisibility } = req.body;
+    const tv = ['all', 'only_income', 'none'];
+    const wv = ['all', 'owner_only', 'summary_only'];
+    const gv = ['all', 'owner_only'];
+    if (transactionVisibility && !tv.includes(transactionVisibility)) return res.status(400).json({ error: 'transactionVisibility không hợp lệ' });
+    if (walletVisibility && !wv.includes(walletVisibility)) return res.status(400).json({ error: 'walletVisibility không hợp lệ' });
+    if (goalVisibility && !gv.includes(goalVisibility)) return res.status(400).json({ error: 'goalVisibility không hợp lệ' });
+    family.sharingSettings = {
+        transactionVisibility: transactionVisibility || family.sharingSettings.transactionVisibility,
+        walletVisibility: walletVisibility || family.sharingSettings.walletVisibility,
+        goalVisibility: goalVisibility || family.sharingSettings.goalVisibility,
+    };
+    await family.save();
+    res.json({ success: true, sharingSettings: family.sharingSettings });
+};
+
+export const addSharedResource = async (req, res) => {
+    const userDoc = await User.findById(req.userId);
+    if (!userDoc?.familyId) return res.status(400).json({ error: 'Bạn chưa tham gia nhóm nào' });
+    const family = await Family.findById(userDoc.familyId);
+    if (family.adminId.toString() !== req.userId.toString()) return res.status(403).json({ error: 'Chỉ admin mới chỉnh tài nguyên' });
+    const { resourceType, resourceId } = req.body;
+    const allowed = ['budgets', 'wallets', 'goals'];
+    if (!allowed.includes(resourceType)) return res.status(400).json({ error: 'resourceType không hợp lệ' });
+    const added = await family.addSharedResource(resourceType, resourceId);
+    res.json({ success: true, added });
+};
+
+export const removeSharedResource = async (req, res) => {
+    const userDoc = await User.findById(req.userId);
+    if (!userDoc?.familyId) return res.status(400).json({ error: 'Bạn chưa tham gia nhóm nào' });
+    const family = await Family.findById(userDoc.familyId);
+    if (family.adminId.toString() !== req.userId.toString()) return res.status(403).json({ error: 'Chỉ admin mới chỉnh tài nguyên' });
+    const { resourceType, resourceId } = req.body;
+    const allowed = ['budgets', 'wallets', 'goals'];
+    if (!allowed.includes(resourceType)) return res.status(400).json({ error: 'resourceType không hợp lệ' });
+    const removed = await family.removeSharedResource(resourceType, resourceId);
+    res.json({ success: true, removed });
 };

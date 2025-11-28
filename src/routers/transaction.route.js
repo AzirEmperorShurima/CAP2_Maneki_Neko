@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { getTransactionChartData, getTransactions } from "../controllers/transaction.js";
+import { getTransactionChartData, getTransactions, createTransaction, updateTransaction } from "../controllers/transaction.js";
 
 const transactionRouter = Router()
 
@@ -11,5 +11,7 @@ transactionRouter.get("/", (req, res) => {
 })
 transactionRouter.get("/transactions", getTransactions)
 transactionRouter.get("/transactions/chart-data", getTransactionChartData)
+transactionRouter.post("/transactions", createTransaction)
+transactionRouter.put("/transactions/:id", updateTransaction)
 
 export default transactionRouter

@@ -15,5 +15,6 @@ chatRouter.get("/", (req, res) => {
 })
 chatRouter.post('/old-chat', chat)
 chatRouter.post('/gemini-chat', geminiChatController)
+chatRouter.post('/gemini', geminiChatController)
 
 export default chatRouter

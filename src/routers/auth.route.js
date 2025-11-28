@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { loginBase, verifyGoogleId } from "../controllers/auth.js";
+import { register, login, verifyGoogleId } from "../controllers/auth.js";
 
 const authRouter = Router()
 
@@ -10,8 +10,9 @@ authRouter.get("/", (req, res) => {
     })
 })
 
+authRouter.post("/register", register)
+authRouter.post("/login", login)
 authRouter.get("/login/verify/google-id", verifyGoogleId)
-authRouter.post("/login/base", loginBase)
 
 
 export default authRouter

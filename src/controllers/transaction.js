@@ -147,12 +147,8 @@ export const getTransactions = async (req, res) => {
                 category: plain.categoryId ? {
                     id: plain.categoryId._id,
                     name: plain.categoryId.name,
-                    icon: plain.categoryId.icon || 'HelpCircle',
-                    color: plain.categoryId.color || '#94a3b8'
                 } : {
                     name: 'Không xác định',
-                    icon: 'HelpCircle',
-                    color: '#94a3b8'
                 }
             };
         });
