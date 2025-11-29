@@ -1,6 +1,6 @@
 // routes/goalRoutes.js
 import { Router } from 'express';
-import { createGoal, getGoals, getGoalById, updateGoal, addProgressToGoal, linkWalletsToGoal, unlinkWalletFromGoal, deleteGoal } from '../controllers/goal.js';
+import { createGoal, getGoals, getGoalById, updateGoal, addProgressToGoal, linkWalletsToGoal, unlinkWalletFromGoal, deleteGoal } from '../controllers/goalController.js';
 
 const goalRouter = Router();
 

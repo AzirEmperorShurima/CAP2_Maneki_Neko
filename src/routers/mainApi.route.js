@@ -1,12 +1,12 @@
 import { Router } from "express";
 import authRouter from "./auth.route.js";
-import chatRouter from "./chat.js";
-import userRouter from "./user.Route.js";
+import chatRouter from "./chat.route.js";
+import userRouter from "./user.route.js";
 import { jwtAuth } from "../middlewares/auth.js";
 import testRouter from "./testRouter.js";
 import transactionRouter from "./transaction.route.js";
 import familyRouter from "./family.route.js";
-import { joinFamilyWeb } from "../controllers/family.js";
+import { joinFamilyWeb } from "../controllers/familyController.js";
 import goalRouter from "./goal.route.js";
 import walletRouter from "./wallet.route.js";
 import budgetRouter from "./budget.route.js";
@@ -32,10 +32,10 @@ apiRouter.get("/family/join-web", joinFamilyWeb)
 // Protected Routes
 // ============================================
 apiRouter.use(jwtAuth)
-apiRouter.use("/chat", chatRouter)
 apiRouter.use("/user", userRouter)
-apiRouter.use("/transaction", transactionRouter)
 apiRouter.use("/family", familyRouter)
+apiRouter.use("/chat", chatRouter)
+apiRouter.use("/transaction", transactionRouter)
 apiRouter.use("/budget", budgetRouter)
 apiRouter.use("/wallet", walletRouter)
 apiRouter.use("/goal", goalRouter)

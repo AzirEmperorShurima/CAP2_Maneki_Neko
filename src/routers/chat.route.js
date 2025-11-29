@@ -1,6 +1,6 @@
 import { Router } from "express";
-import { chat } from "../controllers/chat.js";
-import { geminiChatController } from "../controllers/chat_gemini.js";
+import { chat } from "../controllers/chatController.js";
+import { geminiChatController } from "../controllers/chat_geminiController.js";
 
 const chatRouter = Router()
 // chatRouter.use(jwtAuth)

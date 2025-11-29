@@ -2,22 +2,15 @@
 import Budget from '../models/budget.js';
 import Family from '../models/family.js';
 import dayjs from 'dayjs';
+import { validateCreateBudget, validateUpdateBudget, validateGetBudgetsQuery } from '../validations/budget.js';
 
 export const createBudget = async (req, res) => {
     try {
-        const { type, amount, categoryId, isShared } = req.body;
-
-        if (!type || !amount) {
-            return res.status(400).json({ error: 'Loại kỳ và số tiền ngân sách là bắt buộc' });
+        const { error, value } = validateCreateBudget(req.body);
+        if (error) {
+            return res.status(400).json({ error: 'Invalid payload', details: error.details.map(d => ({ field: d.path.join('.'), message: d.message })) });
         }
-
-        if (!['daily', 'weekly', 'monthly'].includes(type)) {
-            return res.status(400).json({ error: 'Loại kỳ không hợp lệ. Phải là daily, weekly hoặc monthly' });
-        }
-
-        if (amount <= 0) {
-            return res.status(400).json({ error: 'Số tiền ngân sách phải lớn hơn 0' });
-        }
+        const { type, amount, categoryId, isShared, familyId: bodyFamilyId } = value;
 
         // Nếu tạo ngân sách chia sẻ, kiểm tra quyền admin của family
         let familyId = null;
@@ -26,7 +19,7 @@ export const createBudget = async (req, res) => {
             if (!user) {
                 return res.status(403).json({ error: 'Chỉ admin của gia đình mới có thể tạo ngân sách chia sẻ' });
             }
-            familyId = req.body.familyId;
+            familyId = bodyFamilyId;
         }
 
         const budget = new Budget({
@@ -72,7 +65,11 @@ export const createBudget = async (req, res) => {
 
 export const getBudgets = async (req, res) => {
     try {
-        const { isActive, isShared } = req.query;
+        const { error, value } = validateGetBudgetsQuery(req.query);
+        if (error) {
+            return res.status(400).json({ error: 'Invalid query', details: error.details.map(d => ({ field: d.path.join('.'), message: d.message })) });
+        }
+        const { isActive, isShared } = value;
         const filter = { userId: req.userId };
 
         if (isActive !== undefined) {
@@ -111,7 +108,11 @@ export const getBudgetById = async (req, res) => {
 export const updateBudget = async (req, res) => {
     try {
         const { id } = req.params;
-        const { type, amount, categoryId, isActive, isShared } = req.body;
+        const { error, value } = validateUpdateBudget(req.body);
+        if (error) {
+            return res.status(400).json({ error: 'Invalid payload', details: error.details.map(d => ({ field: d.path.join('.'), message: d.message })) });
+        }
+        const { type, amount, categoryId, isActive, isShared, familyId: bodyFamilyId } = value;
 
         const budget = await Budget.findOne({ _id: id, userId: req.userId });
         if (!budget) {
@@ -121,11 +122,11 @@ export const updateBudget = async (req, res) => {
         // Nếu thay đổi isShared, cần kiểm tra quyền
         if (isShared !== undefined && isShared !== budget.isShared) {
             if (isShared) {
-                const family = await Family.findOne({ _id: req.body.familyId, adminId: req.userId });
+                const family = await Family.findOne({ _id: bodyFamilyId, adminId: req.userId });
                 if (!family) {
                     return res.status(403).json({ error: 'Chỉ admin của gia đình mới có thể chia sẻ ngân sách' });
                 }
-                budget.familyId = req.body.familyId;
+                budget.familyId = bodyFamilyId;
             } else {
                 budget.familyId = null;
             }

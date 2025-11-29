@@ -2,14 +2,15 @@
 import Goal from '../models/goal.js';
 import Wallet from '../models/wallet.js';
 import Family from '../models/family.js';
+import { validateCreateGoal, validateUpdateGoal, validateAddProgress, validateLinkWallets } from '../validations/goal.js';
 
 export const createGoal = async (req, res) => {
     try {
-        const { name, description, targetAmount, deadline, associatedWallets } = req.body;
-
-        if (!name || !targetAmount || !deadline) {
-            return res.status(400).json({ error: 'Tên mục tiêu, số tiền mục tiêu và ngày hết hạn là bắt buộc' });
+        const { error, value } = validateCreateGoal(req.body);
+        if (error) {
+            return res.status(400).json({ error: 'Invalid payload', details: error.details.map(d => ({ field: d.path.join('.'), message: d.message })) });
         }
+        const { name, description, targetAmount, deadline, associatedWallets } = value;
 
         // Validate associatedWallets nếu có
         const walletIds = associatedWallets || [];
@@ -84,7 +85,11 @@ export const getGoalById = async (req, res) => {
 export const updateGoal = async (req, res) => {
     try {
         const { id } = req.params;
-        const { name, description, targetAmount, deadline, associatedWallets } = req.body;
+        const { error, value } = validateUpdateGoal(req.body);
+        if (error) {
+            return res.status(400).json({ error: 'Invalid payload', details: error.details.map(d => ({ field: d.path.join('.'), message: d.message })) });
+        }
+        const { name, description, targetAmount, deadline, associatedWallets } = value;
 
         const goal = await Goal.findOne({ _id: id, userId: req.userId });
         if (!goal) {
@@ -123,11 +128,11 @@ export const updateGoal = async (req, res) => {
 export const addProgressToGoal = async (req, res) => {
     try {
         const { id } = req.params;
-        const { amount } = req.body;
-
-        if (!amount || amount <= 0) {
-            return res.status(400).json({ error: 'Số tiền phải lớn hơn 0' });
+        const { error, value } = validateAddProgress(req.body);
+        if (error) {
+            return res.status(400).json({ error: 'Invalid payload', details: error.details.map(d => ({ field: d.path.join('.'), message: d.message })) });
         }
+        const { amount } = value;
 
         const goal = await Goal.findOne({ _id: id, userId: req.userId });
         if (!goal) {
@@ -156,11 +161,11 @@ export const addProgressToGoal = async (req, res) => {
 export const linkWalletsToGoal = async (req, res) => {
     try {
         const { id } = req.params;
-        const { walletIds } = req.body;
-
-        if (!Array.isArray(walletIds) || walletIds.length === 0) {
-            return res.status(400).json({ error: 'Phải cung cấp ít nhất một ví' });
+        const { error, value } = validateLinkWallets(req.body);
+        if (error) {
+            return res.status(400).json({ error: 'Invalid payload', details: error.details.map(d => ({ field: d.path.join('.'), message: d.message })) });
         }
+        const { walletIds } = value;
 
         const goal = await Goal.findOne({ _id: id, userId: req.userId });
         if (!goal) {

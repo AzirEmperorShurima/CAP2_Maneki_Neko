@@ -9,7 +9,26 @@ const userSchema = new mongoose.Schema({
     googleId: { type: String, unique: true, sparse: true },
     avatar: { type: String },
     familyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Family' },
-    isFamilyAdmin: { type: Boolean, default: false }
+    isFamilyAdmin: { type: Boolean, default: false },
+    fcmTokens: [{
+        token: {
+            type: String,
+            required: true
+        },
+        deviceId: {
+            type: String,
+            required: true
+        },
+        platform: {
+            type: String,
+            enum: ['android', 'ios'],
+            required: true
+        },
+        lastUsed: {
+            type: Date,
+            default: Date.now
+        }
+    }]
 }, { timestamps: true });
 
 // Index User Schema

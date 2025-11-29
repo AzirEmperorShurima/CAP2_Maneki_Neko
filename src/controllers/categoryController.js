@@ -1,8 +1,13 @@
 import category from "../models/category";
 import user from "../models/user";
+import { validateCreateCategory, validateUpdateCategory, validateGetCategoriesQuery } from "../validations/category.js";
 
 export const createCategory = async (req, res) => {
-    const { name, type, keywords, scope } = req.body;
+    const { error, value } = validateCreateCategory(req.body);
+    if (error) {
+        return res.status(400).json({ error: 'Invalid payload', details: error.details.map(d => ({ field: d.path.join('.'), message: d.message })) });
+    }
+    const { name, type, keywords, scope } = value;
     const _user = await user.findById(req.userId).lean();
 
     const _category = new category({
@@ -21,7 +26,11 @@ export const createCategory = async (req, res) => {
 export const updateCategory = async (req, res) => {
     try {
         const { id } = req.params;
-        const { name, type, keywords } = req.body;
+        const { error, value } = validateUpdateCategory(req.body);
+        if (error) {
+            return res.status(400).json({ error: 'Invalid payload', details: error.details.map(d => ({ field: d.path.join('.'), message: d.message })) });
+        }
+        const { name, type, keywords } = value;
         const _user = await user.findById(req.userId).lean();
 
         const _category = await category.findById(id);
@@ -70,7 +79,11 @@ export const updateCategory = async (req, res) => {
 };
 
 export const getCategories = async (req, res) => {
-    const { type } = req.query;
+    const { error, value } = validateGetCategoriesQuery(req.query);
+    if (error) {
+        return res.status(400).json({ error: 'Invalid query', details: error.details.map(d => ({ field: d.path.join('.'), message: d.message })) });
+    }
+    const { type } = value;
     const _user = await user.findById(req.userId).lean();
 
     const match = {

@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { createFamily, generateInviteLink, sendInviteEmail, joinFamilyWeb, leaveFamily, getFamilyMembers, updateSharingSettings, addSharedResource, removeSharedResource } from "../controllers/family.js";
+import { createFamily, generateInviteLink, sendInviteEmail, joinFamilyWeb, leaveFamily, getFamilyMembers, updateSharingSettings, addSharedResource, removeSharedResource } from "../controllers/familyController.js";
 
 const familyRouter = Router();
 

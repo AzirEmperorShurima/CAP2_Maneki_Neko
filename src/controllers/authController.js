@@ -3,6 +3,7 @@ import user from "../models/user.js";
 import { OAuth2Client } from "google-auth-library";
 import { googleAppClientId } from "../config/googleAuth.js";
 import { validateRegister, validateLogin } from "../validations/auth.js";
+import { registerFCMToken } from "../utils/fcm.js";
 
 export const register = async (req, res) => {
     try {
@@ -77,7 +78,14 @@ export const login = async (req, res) => {
             process.env.JWT_SECRET,
             { expiresIn: "7d" }
         );
-
+        let fcmPayload = {};
+        if (req.body.fcmToken && req.body.deviceId && req.body.platform) {
+            fcmPayload = {
+                fcmToken: req.body.fcmToken,
+                deviceId: req.body.deviceId,
+                platform: req.body.platform
+            }
+        }
         res.json({
             user: {
                 id: _user._id,
@@ -87,6 +95,15 @@ export const login = async (req, res) => {
             },
             token
         });
+        setImmediate(async () => {
+            const fcm = await registerFCMToken(_user, fcmPayload);
+            if (fcm) {
+                console.log('FCM token đã được đăng ký thành công');
+            } else {
+                console.log('FCM token đã được đăng ký thất bại');
+            }
+        });
+
     } catch (err) {
         console.error('Login error:', err);
         res.status(500).json({ message: "Internal server error" });
@@ -160,6 +177,17 @@ export const verifyGoogleId = async (req, res) => {
             });
         }
         res.status(401).json({ message: "Invalid Google token" });
+    }
+};
+
+
+export const logout = async (req, res) => {
+    try {
+        res.clearCookie('token');
+        res.status(200).json({ message: 'Logout successful' });
+    } catch (err) {
+        console.error('Logout error:', err);
+        res.status(500).json({ message: "Internal server error" });
     }
 };
 
