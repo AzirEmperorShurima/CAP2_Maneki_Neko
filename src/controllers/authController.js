@@ -1,9 +1,12 @@
 import jwt from "jsonwebtoken";
+import crypto from "crypto";
 import user from "../models/user.js";
 import { OAuth2Client } from "google-auth-library";
 import { googleAppClientId } from "../config/googleAuth.js";
-import { validateRegister, validateLogin } from "../validations/auth.js";
+import { validateRegister, validateLogin, validateVerifyGoogle } from "../validations/auth.js";
 import { registerFCMToken } from "../utils/fcm.js";
+import { renewRefreshToken } from "../utils/auth.js";
+import RefreshToken from "../models/refreshToken.js";
 
 export const register = async (req, res) => {
     try {
@@ -25,8 +28,6 @@ export const register = async (req, res) => {
             user: {
                 id: _user._id,
                 accountName: _user.accountName,
-                email: _user.email,
-                username: _user.username || null,
             },
         });
     } catch (err) {
@@ -54,7 +55,9 @@ export const login = async (req, res) => {
             });
         }
 
-        const { accountName, password } = value;
+        const { accountName, password,
+            //  deviceId, fcmToken, platform
+             } = value;
         const _user = await user.findOne({ accountName });
 
         if (!_user) {
@@ -70,22 +73,27 @@ export const login = async (req, res) => {
 
         const isPasswordValid = await _user.comparePassword(password);
         if (!isPasswordValid) {
-            return res.status(401).json({ error: 'Mật khẩu không đúng' });
+            return res.status(401).json({ error: 'Tên đăng nhập hoặc mật khẩu không đúng' });
         }
+        // if (!deviceId) {
+        //     return res.status(400).json({ error: 'deviceId là bắt buộc để quản lý phiên đăng nhập' });
+        // }
+        // Xóa các refresh token cũ của user trên deviceId này
+        // const refreshTokenValue = await renewRefreshToken(_user._id, deviceId);
 
-        const token = jwt.sign(
+        const accessToken = jwt.sign(
             { id: _user._id },
             process.env.JWT_SECRET,
             { expiresIn: "7d" }
         );
         let fcmPayload = {};
-        if (req.body.fcmToken && req.body.deviceId && req.body.platform) {
-            fcmPayload = {
-                fcmToken: req.body.fcmToken,
-                deviceId: req.body.deviceId,
-                platform: req.body.platform
-            }
-        }
+        // if (fcmToken && deviceId && platform) {
+        //     fcmPayload = {
+        //         fcmToken,
+        //         deviceId,
+        //         platform
+        //     }
+        // }
         res.json({
             user: {
                 id: _user._id,
@@ -93,16 +101,18 @@ export const login = async (req, res) => {
                 email: _user.email,
                 avatar: _user.avatar || null,
             },
-            token
+            accessToken,
+            // refreshToken: refreshTokenValue,
+            expiresAt: 15 * 60
         });
-        setImmediate(async () => {
-            const fcm = await registerFCMToken(_user, fcmPayload);
-            if (fcm) {
-                console.log('FCM token đã được đăng ký thành công');
-            } else {
-                console.log('FCM token đã được đăng ký thất bại');
-            }
-        });
+        // setImmediate(async () => {
+        //     const fcm = await registerFCMToken(_user, fcmPayload);
+        //     if (fcm) {
+        //         console.log('FCM token đã được đăng ký thành công');
+        //     } else {
+        //         console.log('FCM token đã được đăng ký thất bại');
+        //     }
+        // });
 
     } catch (err) {
         console.error('Login error:', err);
@@ -111,7 +121,14 @@ export const login = async (req, res) => {
 };
 export const verifyGoogleId = async (req, res) => {
     try {
-        const { idToken } = req.body;
+        const { error, value } = validateVerifyGoogle(req.body);
+        if (error) {
+            return res.status(400).json({
+                error: 'Invalid payload',
+                details: error.details.map(d => ({ field: d.path.join('.'), message: d.message }))
+            });
+        }
+        const { idToken, deviceId, fcmToken, platform } = value;
         const client = new OAuth2Client(googleAppClientId);
         const ticket = await client.verifyIdToken({
             idToken,
@@ -126,12 +143,12 @@ export const verifyGoogleId = async (req, res) => {
 
         if (userWithGoogleId) {
             // Nếu googleId đã tồn tại trong hệ thống, đăng nhập với user đó
-            const token = jwt.sign(
+            const accessToken = jwt.sign(
                 { id: userWithGoogleId._id },
                 process.env.JWT_SECRET,
                 { expiresIn: "7d" }
             );
-
+            const refreshTokenValue = await renewRefreshToken(userWithGoogleId._id, deviceId);
             return res.json({
                 user: {
                     id: userWithGoogleId._id,
@@ -139,7 +156,9 @@ export const verifyGoogleId = async (req, res) => {
                     email: userWithGoogleId.email,
                     avatar: userWithGoogleId.avatar || null,
                 },
-                token
+                accessToken,
+                refreshToken: refreshTokenValue,
+                expiresAt: 15 * 60
             });
         }
 
@@ -152,13 +171,30 @@ export const verifyGoogleId = async (req, res) => {
             avatar,
             password: '' // Tài khoản chỉ dùng Google
         });
+        const refreshTokenValue = crypto.randomBytes(64).toString('hex');
 
-        const token = jwt.sign(
+        const refreshToken = new RefreshToken({
+            token: refreshTokenValue,
+            userId: newUser._id,
+            deviceId: deviceId,
+            isValid: true,
+            expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
+        });
+
+        await RefreshToken.save();
+        const accessToken = jwt.sign(
             { id: newUser._id },
             process.env.JWT_SECRET,
             { expiresIn: "7d" }
         );
-
+        let fcmPayload = {};
+        if (fcmToken && deviceId && platform) {
+            fcmPayload = {
+                fcmToken,
+                deviceId,
+                platform
+            }
+        }
         res.json({
             user: {
                 id: newUser._id,
@@ -166,9 +202,18 @@ export const verifyGoogleId = async (req, res) => {
                 email: newUser.email,
                 avatar: newUser.avatar || null,
             },
-            token
+            accessToken,
+            refreshToken: refreshTokenValue,
+            expiresAt: 15 * 60
         });
-
+        setImmediate(async () => {
+            const fcm = await registerFCMToken(newUser, fcmPayload);
+            if (fcm) {
+                console.log('FCM token đã được đăng ký thành công');
+            } else {
+                console.log('FCM token đã được đăng ký thất bại');
+            }
+        });
     } catch (err) {
         console.error('Google auth error:', err);
         if (err.code === 11000 && err.keyPattern && err.keyPattern.googleId) {
@@ -183,11 +228,36 @@ export const verifyGoogleId = async (req, res) => {
 
 export const logout = async (req, res) => {
     try {
-        res.clearCookie('token');
-        res.status(200).json({ message: 'Logout successful' });
-    } catch (err) {
-        console.error('Logout error:', err);
-        res.status(500).json({ message: "Internal server error" });
+        const { deviceId } = req.body;
+
+        if (!deviceId) {
+            return res.status(400).json({
+                error: 'deviceId là bắt buộc để đăng xuất thiết bị'
+            });
+        }
+
+        const result = await RefreshToken.updateMany(
+            {
+                userId: req.userId,
+                deviceId: deviceId,
+                isValid: true
+            },
+            { isValid: false }
+        );
+
+        let message = ""
+        result.modifiedCount === 0
+            ? message = 'Không tìm thấy phiên đăng nhập của thiết bị này hoặc thiết bị đã được đăng xuất trước đó'
+            : message = 'Đã đăng xuất thiết bị thành công';
+
+        res.json({
+            success: true,
+            message: message
+        });
+
+    } catch (error) {
+        console.error('Lỗi khi đăng xuất thiết bị:', error);
+        res.status(500).json({ error: 'Lỗi server khi đăng xuất' });
     }
 };
 

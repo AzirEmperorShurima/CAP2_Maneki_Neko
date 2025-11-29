@@ -45,9 +45,10 @@ const familySchema = new mongoose.Schema({
     },
     inviteCode: {
         type: String,
-        default: () => new mongoose.Types.ObjectId().toString(),
+        default: "null",
         unique: true,
-        index: true
+        index: true,
+        trim: true
     },
     pendingInvites: [{
         email: {
@@ -77,11 +78,10 @@ const familySchema = new mongoose.Schema({
     toObject: { virtuals: true }
 });
 
-// Indexes để tối ưu truy vấn
-familySchema.index({ adminId: 1 });
+// Indexes
+familySchema.index({ 'adminId': 1 });
 familySchema.index({ 'members': 1 });
 familySchema.index({ 'pendingInvites.email': 1 });
-familySchema.index({ inviteCode: 1 });
 
 // Virtual để đếm số thành viên
 familySchema.virtual('memberCount', {

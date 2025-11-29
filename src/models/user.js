@@ -1,11 +1,11 @@
 import mongoose from "mongoose";
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 
 const userSchema = new mongoose.Schema({
     accountName: { type: String, required: true, unique: true }, // for login without google
     username: { type: String, unique: true, sparse: true },
-    email: { type: String, required: true, unique: true },
-    password: { type: String }, // Bỏ required vì có user chỉ dùng Google không có password
+    email: { type: String, unique: true, default: '' },
+    password: { type: String },
     googleId: { type: String, unique: true, sparse: true },
     avatar: { type: String },
     familyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Family' },
@@ -32,7 +32,6 @@ const userSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 // Index User Schema
-userSchema.index({ accountName: 1 });
 userSchema.index({ email: 1, username: 1 });
 userSchema.index({ familyId: 1 });
 

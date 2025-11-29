@@ -7,13 +7,12 @@ export const createCategory = async (req, res) => {
     if (error) {
         return res.status(400).json({ error: 'Invalid payload', details: error.details.map(d => ({ field: d.path.join('.'), message: d.message })) });
     }
-    const { name, type, keywords, scope } = value;
+    const { name, type, scope } = value;
     const _user = await user.findById(req.userId).lean();
 
     const _category = new category({
         name,
         type,
-        keywords,
         scope,
         userId: _user._id,
         familyId: _user.familyId || null
@@ -30,7 +29,7 @@ export const updateCategory = async (req, res) => {
         if (error) {
             return res.status(400).json({ error: 'Invalid payload', details: error.details.map(d => ({ field: d.path.join('.'), message: d.message })) });
         }
-        const { name, type, keywords } = value;
+        const { name, type } = value;
         const _user = await user.findById(req.userId).lean();
 
         const _category = await category.findById(id);
@@ -52,19 +51,10 @@ export const updateCategory = async (req, res) => {
             }
         }
 
-        let normalizedKeywords;
-        if (Array.isArray(keywords)) {
-            normalizedKeywords = [...new Set(keywords
-                .filter(k => typeof k === 'string')
-                .map(k => k.trim().toLowerCase())
-                .filter(k => k.length > 0))];
-        }
-
         // Chỉ cho phép sửa các trường hợp lý; không cho đổi scope
         const update = {};
         if (typeof name === 'string') update.name = name.trim();
         if (type === 'income' || type === 'expense') update.type = type;
-        if (normalizedKeywords) update.keywords = normalizedKeywords;
 
         if (_category.scope === 'personal') update.userId = _category.userId;
         if (_category.scope === 'family') update.familyId = _category.familyId;
@@ -96,7 +86,7 @@ export const getCategories = async (req, res) => {
     if (type) match.type = type;
 
     const categories = await category.find(match)
-        .select('name type scope keywords')
+        .select('name type scope')
         .sort({ scope: 1, name: 1 });
 
     res.json({ success: true, categories });

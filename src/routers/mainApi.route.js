@@ -10,6 +10,7 @@ import { joinFamilyWeb } from "../controllers/familyController.js";
 import goalRouter from "./goal.route.js";
 import walletRouter from "./wallet.route.js";
 import budgetRouter from "./budget.route.js";
+import fcmRouter from "./fcm.route.js";
 
 const apiRouter = Router()
 
@@ -27,13 +28,14 @@ apiRouter.get("/", (req, res) => {
 apiRouter.use("/auth", authRouter)
 apiRouter.use("/test", testRouter)
 // Public family join endpoint
-apiRouter.get("/family/join-web", joinFamilyWeb)
+apiRouter.use("/family", familyRouter)
+apiRouter.use("/fcm", fcmRouter)
 // ============================================
 // Protected Routes
 // ============================================
 apiRouter.use(jwtAuth)
 apiRouter.use("/user", userRouter)
-apiRouter.use("/family", familyRouter)
+
 apiRouter.use("/chat", chatRouter)
 apiRouter.use("/transaction", transactionRouter)
 apiRouter.use("/budget", budgetRouter)

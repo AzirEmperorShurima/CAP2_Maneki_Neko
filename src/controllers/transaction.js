@@ -120,7 +120,7 @@ export const getTransactions = async (req, res) => {
 
         const [transactions, total] = await Promise.all([
             Transaction.find(match)
-                .populate('categoryId', 'name icon color')
+                .populate('categoryId', 'name')
                 .populate('userId', 'username avatar')
                 .sort({ date: -1 })
                 .skip(skip)

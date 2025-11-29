@@ -6,16 +6,16 @@ import { themedPage } from '../utils/webTheme.js';
 import { StatusCodes } from 'http-status-codes';
 import dayjs from 'dayjs';
 
-// async function generateInviteCode() {
-//     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-//     const len = 8;
-//     for (; ;) {
-//         let code = '';
-//         for (let i = 0; i < len; i++) code += chars[Math.floor(Math.random() * chars.length)];
-//         const exists = await Family.findOne({ inviteCode: code }).lean();
-//         if (!exists) return code;
-//     }
-// }
+async function generateInviteCode() {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    const len = 8;
+    for (; ;) {
+        let code = '';
+        for (let i = 0; i < len; i++) code += chars[Math.floor(Math.random() * chars.length)];
+        const exists = await Family.findOne({ inviteCode: code }).lean();
+        if (!exists) return code;
+    }
+}
 
 export const createFamily = async (req, res) => {
     const { name } = req.body;
@@ -34,12 +34,10 @@ export const createFamily = async (req, res) => {
             });
         }
 
-        const inviteCode = await generateInviteCode();
         const family = new Family({
             name: name.trim(),
             adminId: req.userId,
             members: [req.userId],
-            inviteCode,
         });
 
         await family.save();
