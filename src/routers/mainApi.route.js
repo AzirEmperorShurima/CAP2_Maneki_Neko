@@ -1,7 +1,7 @@
 import { Router } from "express";
 import authRouter from "./auth.route.js";
 import chatRouter from "./chat.route.js";
-import userRouter from "./user.route.js";
+import userRouter from "./user.router.js";
 import { jwtAuth } from "../middlewares/auth.js";
 import testRouter from "./testRouter.js";
 import transactionRouter from "./transaction.route.js";
