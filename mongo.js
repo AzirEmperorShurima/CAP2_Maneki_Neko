@@ -43,25 +43,48 @@ export const initializeCollections = async (models) => {
 const tryConnectToMongo = async (uri, label) => {
     try {
         console.log(`📡 Đang thử kết nối ${label}...`);
-        await mongoose.connect(uri, {
+
+        // Cấu hình connection options dựa trên MongoDB Atlas recommended settings
+        const connectionOptions = {
             serverSelectionTimeoutMS: 5000,
             socketTimeoutMS: 45000,
-        });
-        console.log(`✅ Kết nối ${label} thành công!`);
+        };
+
+        // Thêm serverApi cho MongoDB Atlas
+        if (label === "MongoDB Atlas") {
+            connectionOptions.serverApi = {
+                version: '1',
+                strict: true,
+                deprecationErrors: true,
+            };
+        }
+
+        await mongoose.connect(uri, connectionOptions);
+
+        // Ping để xác nhận kết nối (tương tự code mẫu MongoDB Atlas)
+        await mongoose.connection.db.admin().command({ ping: 1 });
+
+        console.log(`✅ Kết nối ${label} thành công! Đã ping database thành công.`);
         return true;
     } catch (error) {
         console.error(`❌ Kết nối ${label} thất bại:`, error.message);
+
+        // Đảm bảo đóng connection nếu có lỗi
+        if (mongoose.connection.readyState !== 0) {
+            await mongoose.connection.close();
+        }
+
         return false;
     }
 };
 
 const connectWithFallback = async () => {
-    // Thử MongoDB Atlas trước
+    // Thử MongoDB Atlas trước (ưu tiên cao nhất)
     if (MONGO_ATLAS_URI) {
         const atlasConnected = await tryConnectToMongo(MONGO_ATLAS_URI, "MongoDB Atlas");
         if (atlasConnected) return true;
     } else {
-        console.log("⚠️ MongoDB Atlas URI không được cấu hình");
+        console.log("⚠️ MongoDB Atlas URI không được cấu hình (MONGO_URI_ATLAS)");
     }
 
     // Fallback sang Railway
@@ -69,7 +92,7 @@ const connectWithFallback = async () => {
         const railwayConnected = await tryConnectToMongo(MONGO_RAILWAY_URI, "Railway MongoDB");
         if (railwayConnected) return true;
     } else {
-        console.log("⚠️ Railway MongoDB URI không được cấu hình");
+        console.log("⚠️ Railway MongoDB URI không được cấu hình (MONGO_URI_RAILWAY)");
     }
 
     // Fallback cuối cùng sang Local
@@ -108,6 +131,7 @@ const reconnectWithRetry = async (retryCount = 0) => {
 export const connectToDatabase = async () => {
     try {
         console.log("🔄 Đang kiểm tra kết nối MongoDB...");
+        console.log("📋 Fallback chain: Atlas → Railway → Local");
 
         const isConnected = await checkMongoConnection();
         if (!isConnected) {
@@ -116,17 +140,19 @@ export const connectToDatabase = async () => {
             if (!connectionSuccess) {
                 throw new Error("Không thể kết nối đến MongoDB sau nhiều lần thử");
             }
+        } else {
+            console.log("✅ MongoDB đã được kết nối sẵn");
         }
 
         await initializeCollections(models_list);
         await category.deleteMany({});
         await category.insertMany(initialCats);
-        
+
         mongoose.connection.on("disconnected", async () => {
             console.log("⚠️ MongoDB đã ngắt kết nối! Đang thử kết nối lại...");
             await reconnectWithRetry();
         });
-        
+
         mongoose.connection.on("error", (error) => {
             console.error("❌ Lỗi kết nối MongoDB:", error);
         });
