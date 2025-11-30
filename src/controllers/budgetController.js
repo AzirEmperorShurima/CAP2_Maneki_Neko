@@ -3,6 +3,7 @@ import Budget from '../models/budget.js';
 import Family from '../models/family.js';
 import dayjs from 'dayjs';
 import { validateCreateBudget, validateUpdateBudget, validateGetBudgetsQuery } from '../validations/budget.js';
+import { calculateBudgetPeriod, syncChildBudgets } from '../utils/budget.js';
 
 export const createBudget = async (req, res) => {
     try {
@@ -22,36 +23,26 @@ export const createBudget = async (req, res) => {
             familyId = bodyFamilyId;
         }
 
+        // Tính toán periodStart và periodEnd
+        const { periodStart, periodEnd } = calculateBudgetPeriod(type);
+
         const budget = new Budget({
             userId: req.userId,
             type,
             amount,
             categoryId: categoryId || null,
-            familyId,
-            isShared: isShared || false
-        });
-
-        // Tự động tính toán periodStart và periodEnd
-        const now = dayjs();
-        let periodStart, periodEnd;
-
-        if (type === 'daily') {
-            periodStart = now.startOf('day').toDate();
-            periodEnd = now.endOf('day').toDate();
-        } else if (type === 'weekly') {
-            periodStart = now.startOf('week').toDate();
-            periodEnd = now.endOf('week').toDate();
-        } else {
-            periodStart = now.startOf('month').toDate();
-            periodEnd = now.endOf('month').toDate();
-        }
-
-        budget.periodStart = periodStart;
-        budget.periodEnd = periodEnd;
-
+            familyId: familyId || null,
+            isShared: isShared || false,
+            periodStart,
+            periodEnd,
+            spentAmount: 0
+        })
         await budget.save();
-
-        const populatedBudget = await Budget.findById(budget._id);
+        if (type === 'monthly') {
+            await syncChildBudgets(budget);
+        }
+        const populatedBudget = await Budget.findById(budget._id)
+            .populate('parentBudgetId categoryId');
 
         res.status(201).json({
             message: 'Tạo ngân sách thành công',
@@ -67,10 +58,21 @@ export const getBudgets = async (req, res) => {
     try {
         const { error, value } = validateGetBudgetsQuery(req.query);
         if (error) {
-            return res.status(400).json({ error: 'Invalid query', details: error.details.map(d => ({ field: d.path.join('.'), message: d.message })) });
+            return res.status(400).json({
+                error: 'Invalid query',
+                details: error.details.map(d => ({ field: d.path.join('.'), message: d.message }))
+            });
         }
+
         const { isActive, isShared } = value;
         const filter = { userId: req.userId };
+
+
+        const now = dayjs();
+        filter.$and = [
+            { periodStart: { $lte: now.toDate() } },
+            { periodEnd: { $gte: now.toDate() } }
+        ];
 
         if (isActive !== undefined) {
             filter.isActive = isActive === 'true';
@@ -80,7 +82,9 @@ export const getBudgets = async (req, res) => {
             filter.isShared = isShared === 'true';
         }
 
-        const budgets = await Budget.find(filter).sort({ createdAt: -1 });
+        const budgets = await Budget.find(filter)
+            .populate('categoryId parentBudgetId')
+            .sort({ type: 1, periodStart: -1 });
 
         res.json({ budgets });
     } catch (error) {
@@ -92,7 +96,8 @@ export const getBudgets = async (req, res) => {
 export const getBudgetById = async (req, res) => {
     try {
         const { id } = req.params;
-        const budget = await Budget.findOne({ _id: id, userId: req.userId });
+        const budget = await Budget.findOne({ _id: id, userId: req.userId })
+            .populate('categoryId parentBudgetId');
 
         if (!budget) {
             return res.status(404).json({ error: 'Không tìm thấy ngân sách' });
@@ -110,16 +115,20 @@ export const updateBudget = async (req, res) => {
         const { id } = req.params;
         const { error, value } = validateUpdateBudget(req.body);
         if (error) {
-            return res.status(400).json({ error: 'Invalid payload', details: error.details.map(d => ({ field: d.path.join('.'), message: d.message })) });
+            return res.status(400).json({
+                error: 'Invalid payload',
+                details: error.details.map(d => ({ field: d.path.join('.'), message: d.message }))
+            });
         }
-        const { type, amount, categoryId, isActive, isShared, familyId: bodyFamilyId } = value;
+
+        const { amount, categoryId, isActive, isShared, familyId: bodyFamilyId } = value;
 
         const budget = await Budget.findOne({ _id: id, userId: req.userId });
         if (!budget) {
             return res.status(404).json({ error: 'Không tìm thấy ngân sách' });
         }
 
-        // Nếu thay đổi isShared, cần kiểm tra quyền
+        // Xử lý thay đổi trạng thái chia sẻ
         if (isShared !== undefined && isShared !== budget.isShared) {
             if (isShared) {
                 const family = await Family.findOne({ _id: bodyFamilyId, adminId: req.userId });
@@ -133,35 +142,8 @@ export const updateBudget = async (req, res) => {
             budget.isShared = isShared;
         }
 
-        if (type !== undefined) {
-            if (!['daily', 'weekly', 'monthly'].includes(type)) {
-                return res.status(400).json({ error: 'Loại kỳ không hợp lệ' });
-            }
-            budget.type = type;
-
-            // Cập nhật lại periodStart và periodEnd khi thay đổi type
-            const now = dayjs();
-            let periodStart, periodEnd;
-
-            if (type === 'daily') {
-                periodStart = now.startOf('day').toDate();
-                periodEnd = now.endOf('day').toDate();
-            } else if (type === 'weekly') {
-                periodStart = now.startOf('week').toDate();
-                periodEnd = now.endOf('week').toDate();
-            } else {
-                periodStart = now.startOf('month').toDate();
-                periodEnd = now.endOf('month').toDate();
-            }
-
-            budget.periodStart = periodStart;
-            budget.periodEnd = periodEnd;
-        }
-
-        if (amount !== undefined) {
-            if (amount <= 0) {
-                return res.status(400).json({ error: 'Số tiền ngân sách phải lớn hơn 0' });
-            }
+        // Cập nhật các trường được phép thay đổi
+        if (amount !== undefined && amount > 0) {
             budget.amount = amount;
         }
 
@@ -175,8 +157,13 @@ export const updateBudget = async (req, res) => {
 
         await budget.save();
 
-        const populatedBudget = await Budget.findById(budget._id);
-        res.json({ message: 'Cập nhật ngân sách thành công', budget: populatedBudget });
+        const populatedBudget = await Budget.findById(budget._id)
+            .populate('categoryId parentBudgetId');
+
+        res.json({
+            message: 'Cập nhật ngân sách thành công',
+            budget: populatedBudget
+        });
     } catch (error) {
         console.error('Lỗi cập nhật ngân sách:', error);
         res.status(500).json({ error: 'Lỗi server' });
@@ -186,14 +173,15 @@ export const updateBudget = async (req, res) => {
 export const deleteBudget = async (req, res) => {
     try {
         const { id } = req.params;
-        const budget = await Budget.findOne({ _id: id, userId: req.userId });
 
-        if (!budget) {
-            return res.status(404).json({ error: 'Không tìm thấy ngân sách' });
+        // Thực hiện xóa budget khỏi database
+        const result = await Budget.deleteOne({ _id: id, userId: req.userId });
+
+        if (result.deletedCount === 0) {
+            return res.status(404).json({ error: 'Không tìm thấy ngân sách hoặc không có quyền xóa' });
         }
 
-        await Budget.deleteOne({ _id: id, userId: req.userId });
-        res.json({ message: 'Đã xóa ngân sách' });
+        res.json({ message: 'Đã xóa ngân sách thành công' });
     } catch (error) {
         console.error('Lỗi xóa ngân sách:', error);
         res.status(500).json({ error: 'Lỗi server' });
@@ -209,37 +197,68 @@ export const renewBudget = async (req, res) => {
             return res.status(404).json({ error: 'Không tìm thấy ngân sách' });
         }
 
-        if (!budget.isActive) {
-            return res.status(400).json({ error: 'Không thể gia hạn ngân sách đã bị vô hiệu hóa' });
-        }
-
-        // Tính toán kỳ mới
+        // Kiểm tra xem budget có còn trong kỳ hiện tại không
         const now = dayjs();
-        let periodStart, periodEnd;
+        const isCurrentPeriodValid = now.isBetween(budget.periodStart, budget.periodEnd, null, '[]');
 
-        if (budget.type === 'daily') {
-            periodStart = now.startOf('day').toDate();
-            periodEnd = now.endOf('day').toDate();
-        } else if (budget.type === 'weekly') {
-            periodStart = now.startOf('week').toDate();
-            periodEnd = now.endOf('week').toDate();
-        } else {
-            periodStart = now.startOf('month').toDate();
-            periodEnd = now.endOf('month').toDate();
+        if (isCurrentPeriodValid) {
+            return res.status(400).json({
+                error: 'Ngân sách hiện tại vẫn còn trong kỳ, không cần gia hạn'
+            });
         }
 
-        budget.periodStart = periodStart;
-        budget.periodEnd = periodEnd;
+        // Tạo kỳ mới cho budget
+        const { periodStart, periodEnd } = calculateBudgetPeriod(budget.type);
 
-        await budget.save();
+        // Tạo một budget mới với cùng thông tin nhưng kỳ mới
+        const newBudget = new Budget({
+            userId: budget.userId,
+            type: budget.type,
+            amount: budget.amount,
+            categoryId: budget.categoryId,
+            parentBudgetId: budget.parentBudgetId,
+            isDerived: budget.isDerived,
+            familyId: budget.familyId,
+            isShared: budget.isShared,
+            periodStart,
+            periodEnd,
+            spentAmount: 0,
+            isActive: true
+        });
 
-        const updatedBudget = await Budget.findById(budget._id);
+        await newBudget.save();
+
+        // Xóa budget cũ sau khi đã tạo budget mới thành công
+        await Budget.deleteOne({ _id: budget._id });
+
+        const populatedNewBudget = await Budget.findById(newBudget._id)
+            .populate('categoryId parentBudgetId');
+
         res.json({
             message: 'Đã gia hạn ngân sách cho kỳ mới',
-            budget: updatedBudget
+            budget: populatedNewBudget
         });
     } catch (error) {
         console.error('Lỗi gia hạn ngân sách:', error);
+        res.status(500).json({ error: 'Lỗi server' });
+    }
+};
+
+export const getActiveBudgetsForCurrentPeriod = async (req, res) => {
+    try {
+        const now = dayjs();
+        const budgets = await Budget.find({
+            userId: req.userId,
+            isActive: true,
+            periodStart: { $lte: now.toDate() },
+            periodEnd: { $gte: now.toDate() }
+        })
+            .populate('categoryId parentBudgetId')
+            .sort({ type: 1 });
+
+        res.json({ budgets });
+    } catch (error) {
+        console.error('Lỗi lấy danh sách ngân sách hiện tại:', error);
         res.status(500).json({ error: 'Lỗi server' });
     }
 };

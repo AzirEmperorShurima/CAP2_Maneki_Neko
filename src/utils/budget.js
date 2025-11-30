@@ -1,154 +1,267 @@
 // utils/budget.js
-import Transaction from '../models/transaction.js';
 import Budget from '../models/budget.js';
 import Goal from '../models/goal.js';
-import Category from '../models/category.js';
 import dayjs from 'dayjs';
 import isSameOrAfter from 'dayjs/plugin/isSameOrAfter.js';
 import isSameOrBefore from 'dayjs/plugin/isSameOrBefore.js';
-import weekday from 'dayjs/plugin/weekday.js';
-import weekOfYear from 'dayjs/plugin/weekOfYear.js';
 
 dayjs.extend(isSameOrAfter);
 dayjs.extend(isSameOrBefore);
-dayjs.extend(weekday);
-dayjs.extend(weekOfYear);
 
 /**
- * Kiểm tra cảnh báo ngân sách + cập nhật tiến độ goal
- * @param {String} userId
- * @param {Object} transaction - transaction đã lưu (có walletId nếu cần)
- * @returns {String} - chuỗi cảnh báo (có thể rỗng)
+ * Cập nhật spentAmount cho các budget liên quan đến một giao dịch chi tiêu
+ */
+export const updateBudgetSpentAmounts = async (userId, transaction) => {
+    if (transaction.type !== 'expense') return;
+
+    const transDate = dayjs(transaction.date);
+
+    // Tìm tất cả budget đang hoạt động và thuộc kỳ của giao dịch
+    const budgets = await Budget.find({
+        $or: [
+            { userId, familyId: null },
+            { familyId: transaction.familyId }
+        ],
+        isActive: true,
+        periodStart: { $lte: transDate.toDate() },
+        periodEnd: { $gte: transDate.toDate() }
+    });
+
+    for (const budget of budgets) {
+        // Kiểm tra xem giao dịch có thuộc budget này không
+        const shouldIncludeTransaction = !budget.categoryId ||
+            budget.categoryId.toString() === transaction.categoryId.toString();
+
+        if (shouldIncludeTransaction) {
+            budget.spentAmount += transaction.amount;
+            await budget.save();
+        }
+    }
+};
+
+/**
+ * Kiểm tra và tạo cảnh báo ngân sách cho một giao dịch
  */
 export const checkBudgetWarning = async (userId, transaction) => {
-    let warnings = [];
+    if (transaction.type !== 'expense') return '';
 
-    // ===== 1. CẢNH BÁO NGÂN SÁCH (chỉ cho chi tiêu) =====
-    if (transaction.type === 'expense') {
-        const budgetWarning = await getBudgetWarning(userId, transaction);
-        if (budgetWarning) warnings.push(budgetWarning);
-    }
+    const warnings = [];
+    const transDate = dayjs(transaction.date);
 
-    // ===== 2. CẬP NHẬT TIẾN ĐỘ GOAL (chỉ cho thu nhập từ ví liên kết) =====
-    if (transaction.type === 'income' && transaction.walletId) {
-        const goalMessage = await updateGoalProgressFromTransaction(transaction);
-        if (goalMessage) warnings.push(goalMessage);
+    // Tìm tất cả budget đang hoạt động và thuộc kỳ của giao dịch
+    const budgets = await Budget.find({
+        $or: [
+            { userId, familyId: null },
+            { familyId: transaction.familyId }
+        ],
+        isActive: true,
+        periodStart: { $lte: transDate.toDate() },
+        periodEnd: { $gte: transDate.toDate() }
+    });
+
+    for (const budget of budgets) {
+        const shouldIncludeTransaction = !budget.categoryId ||
+            budget.categoryId.toString() === transaction.categoryId.toString();
+
+        if (shouldIncludeTransaction) {
+            const projectedSpent = budget.spentAmount + transaction.amount;
+            const percentUsed = budget.amount > 0 ? (projectedSpent / budget.amount) * 100 : 0;
+
+            const periodName = budget.type === 'daily' ? 'ngày' :
+                budget.type === 'weekly' ? 'tuần' : 'tháng';
+
+            if (projectedSpent > budget.amount) {
+                warnings.push(`Vượt ngân sách ${periodName}: ${projectedSpent.toLocaleString()}đ / ${budget.amount.toLocaleString()}đ`);
+            } else if (percentUsed >= 90) {
+                warnings.push(`Sắp vượt ngân sách ${periodName}: ${Math.round(percentUsed)}% đã sử dụng`);
+            } else if (percentUsed >= 80) {
+                warnings.push(`Đã sử dụng ${Math.round(percentUsed)}% ngân sách ${periodName}`);
+            }
+
+            // Cảnh báo nếu giao dịch chiếm tỷ lệ lớn trong ngân sách
+            if (transaction.amount >= budget.amount * 0.6) {
+                warnings.push(`Chi lớn: ${transaction.amount.toLocaleString()}đ chiếm ${(transaction.amount / budget.amount * 100).toFixed(0)}% ngân sách ${periodName}`);
+            }
+        }
     }
 
     return warnings.length > 0 ? warnings.join('\n') : '';
 };
 
-// ------------------- Hàm phụ trợ -------------------
+/**
+ * Tìm budget hiệu quả cho một ngày cụ thể và danh mục
+ */
+export const getEffectiveBudgetForDate = async (userId, categoryId, targetDate) => {
+    const targetDayjs = dayjs(targetDate);
 
-async function getBudgetWarning(userId, transaction) {
-    const transDate = dayjs(transaction.date);
-    const amount = transaction.amount;
-    const familyId = transaction.familyId;
+    // Tìm theo thứ tự ưu tiên: monthly -> weekly -> daily
+    const budgetTypes = ['monthly', 'weekly', 'daily'];
 
-    // Lấy tất cả budget (cá nhân + gia đình)
-    const budgets = await Budget.find({
-        $or: [
-            { userId, familyId: null },
-            { familyId: familyId || null }
-        ]
-    }).lean();
+    for (const type of budgetTypes) {
+        let budget;
 
-    if (budgets.length === 0) return '';
-
-    // Tính tổng chi tiêu theo từng kỳ
-    const periodTotals = await calculatePeriodTotals(userId, transDate, familyId);
-
-    // Lấy tên danh mục
-    const categoryNameMap = await getCategoryNameMap(budgets);
-
-    const warnings = [];
-    for (const budget of budgets) {
-        const periodData = periodTotals.find(p => p.period === budget.type);
-        if (!periodData) continue;
-
-        const currentTotal = (budget.categoryId
-            ? (periodData.totalMap[budget.categoryId?.toString()] || 0)
-            : periodData.totalMap.overall || 0) + amount;
-
-        const percentUsed = budget.amount > 0 ? (currentTotal / budget.amount) * 100 : 0;
-        const categoryName = budget.categoryId
-            ? categoryNameMap[budget.categoryId.toString()] || 'Không xác định'
-            : 'tổng chi';
-        const periodVi = budget.type === 'daily' ? 'ngày' : budget.type === 'weekly' ? 'tuần' : 'tháng';
-
-        if (currentTotal > budget.amount) {
-            warnings.push(`Vượt ngân sách ${periodVi} ${categoryName}: ${currentTotal.toLocaleString()}đ / ${budget.amount.toLocaleString()}đ`);
-        } else if (percentUsed >= 90) {
-            warnings.push(`Sắp vượt ngân sách ${periodVi} ${categoryName}: ${Math.round(percentUsed)}% dùng rồi!`);
-        } else if (percentUsed >= 80) {
-            warnings.push(`Đã dùng ${Math.round(percentUsed)}% ngân sách ${periodVi} ${categoryName}`);
+        // Tìm budget cụ thể cho danh mục trước
+        if (categoryId) {
+            budget = await Budget.findOne({
+                userId,
+                type,
+                categoryId,
+                isActive: true,
+                periodStart: { $lte: targetDayjs.toDate() },
+                periodEnd: { $gte: targetDayjs.toDate() }
+            });
         }
 
-        if (amount >= budget.amount * 0.6) {
-            warnings.push(`Chi lớn: ${amount.toLocaleString()}đ chiếm ${(amount / budget.amount * 100).toFixed(0)}% ngân sách ${periodVi}!`);
+        // Nếu không có budget cụ thể cho danh mục, tìm budget tổng quát
+        if (!budget) {
+            budget = await Budget.findOne({
+                userId,
+                type,
+                categoryId: null,
+                isActive: true,
+                periodStart: { $lte: targetDayjs.toDate() },
+                periodEnd: { $gte: targetDayjs.toDate() }
+            });
         }
+
+        if (budget) return budget;
     }
 
-    return warnings.length > 0 ? warnings.join('\n') : '';
-}
+    return null;
+};
 
-async function calculatePeriodTotals(userId, transDate, familyId) {
-    const periods = ['daily', 'weekly', 'monthly'];
-    const pipelines = periods.map(period => {
-        let start, end;
-        if (period === 'daily') {
-            start = transDate.startOf('day');
-            end = transDate.endOf('day');
-        } else if (period === 'weekly') {
-            start = transDate.startOf('week');
-            end = transDate.endOf('week').endOf('day');
-        } else {
-            start = transDate.startOf('month');
-            end = transDate.endOf('month');
+/**
+ * Tự động tạo hoặc cập nhật budget con dựa trên budget cha
+ */
+export const syncChildBudgets = async (parentBudget) => {
+    const userId = parentBudget.userId;
+    const childTypes = [];
+
+    // Xác định các loại budget con cần tạo
+    if (parentBudget.type === 'monthly') {
+        childTypes.push('weekly', 'daily');
+    } else if (parentBudget.type === 'weekly') {
+        childTypes.push('daily');
+    }
+
+    for (const childType of childTypes) {
+        const existingChild = await Budget.findOne({
+            userId,
+            type: childType,
+            categoryId: parentBudget.categoryId,
+            parentBudgetId: parentBudget._id,
+            isActive: true
+        });
+
+        const { periodStart, periodEnd } = calculateBudgetPeriod(childType);
+
+        // Tính số tiền cho budget con dựa trên budget cha
+        let childAmount;
+        if (childType === 'daily') {
+            childAmount = parentBudget.amount / dayjs(parentBudget.periodEnd).diff(parentBudget.periodStart, 'day');
+        } else if (childType === 'weekly') {
+            childAmount = parentBudget.amount / 4; // Khoảng 4 tuần trong một tháng
         }
 
-        const match = {
-            type: 'expense',
-            date: { $gte: start.toDate(), $lte: end.toDate() },
-            $or: [{ userId }, { familyId }]
-        };
+        if (existingChild) {
+            // Cập nhật budget con hiện có nếu cần
+            const shouldUpdate = existingChild.amount < childAmount ||
+                !dayjs().isBetween(existingChild.periodStart, existingChild.periodEnd, null, '[]');
 
-        return {
-            period,
-            pipeline: [
-                { $match: match },
-                { $group: { _id: '$categoryId', total: { $sum: '$amount' } } }
-            ]
-        };
+            if (shouldUpdate) {
+                existingChild.amount = Math.max(childAmount, existingChild.amount);
+                existingChild.periodStart = periodStart;
+                existingChild.periodEnd = periodEnd;
+                await existingChild.save();
+            }
+        } else {
+            // Tạo budget con mới
+            const childBudget = new Budget({
+                userId,
+                type: childType,
+                amount: childAmount,
+                parentBudgetId: parentBudget._id,
+                isDerived: true,
+                categoryId: parentBudget.categoryId,
+                periodStart,
+                periodEnd,
+                familyId: parentBudget.familyId,
+                isShared: parentBudget.isShared,
+                spentAmount: 0
+            });
+            await childBudget.save();
+        }
+    }
+};
+
+/**
+ * Xóa các budget đã hết kỳ
+ */
+export const deleteExpiredBudgets = async () => {
+    const now = new Date();
+    const result = await Budget.deleteMany({
+        isActive: true,
+        periodEnd: { $lt: now }
     });
 
-    const results = await Promise.all(
-        pipelines.map(async ({ period, pipeline }) => {
-            const data = await Transaction.aggregate(pipeline);
-            const totalMap = {};
-            let overall = 0;
-            data.forEach(r => {
-                totalMap[r._id?.toString() || 'overall'] = r.total;
-                overall += r.total;
-            });
-            totalMap.overall = overall;
-            return { period, totalMap };
-        })
-    );
+    return result.deletedCount;
+};
 
-    return results;
-}
+/**
+ * Tính toán period cho budget theo loại
+ */
+export const calculateBudgetPeriod = (type, referenceDate = null) => {
+    const now = referenceDate ? dayjs(referenceDate) : dayjs();
 
-async function getCategoryNameMap(budgets) {
-    const categoryIds = budgets.map(b => b.categoryId).filter(Boolean);
-    if (categoryIds.length === 0) return {};
-    const categories = await Category.find({ _id: { $in: categoryIds } }).lean();
-    const map = {};
-    categories.forEach(cat => map[cat._id.toString()] = cat.name);
-    return map;
-}
+    let periodStart, periodEnd;
 
-async function updateGoalProgressFromTransaction(transaction) {
+    switch (type) {
+        case 'daily':
+            periodStart = now.startOf('day').toDate();
+            periodEnd = now.endOf('day').toDate();
+            break;
+        case 'weekly':
+            periodStart = now.startOf('week').toDate();
+            periodEnd = now.endOf('week').toDate();
+            break;
+        case 'monthly':
+            periodStart = now.startOf('month').toDate();
+            periodEnd = now.endOf('month').toDate();
+            break;
+        default:
+            throw new Error('Loại kỳ không hợp lệ');
+    }
+
+    return { periodStart, periodEnd };
+};
+
+/**
+ * Lấy tất cả budget đang hoạt động trong kỳ hiện tại
+ */
+export const getActiveBudgetsForCurrentPeriod = async (userId, familyId = null) => {
+    const now = dayjs();
+    const filter = {
+        isActive: true,
+        periodStart: { $lte: now.toDate() },
+        periodEnd: { $gte: now.toDate() }
+    };
+
+    if (familyId) {
+        filter.$or = [
+            { userId, familyId: null },
+            { familyId }
+        ];
+    } else {
+        filter.userId = userId;
+    }
+
+    return await Budget.find(filter).populate('categoryId parentBudgetId');
+};
+
+/**
+ * Cập nhật tiến độ goal từ transaction (giữ nguyên logic cũ)
+ */
+export const updateGoalProgressFromTransaction = async (transaction) => {
     try {
         const goals = await Goal.find({
             userId: transaction.userId,
@@ -181,4 +294,4 @@ async function updateGoalProgressFromTransaction(transaction) {
         console.error('Lỗi cập nhật goal:', error);
         return null;
     }
-}
+};

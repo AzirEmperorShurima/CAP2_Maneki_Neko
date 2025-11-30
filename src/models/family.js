@@ -79,7 +79,6 @@ const familySchema = new mongoose.Schema({
 });
 
 // Indexes
-familySchema.index({ 'adminId': 1 });
 familySchema.index({ 'members': 1 });
 familySchema.index({ 'pendingInvites.email': 1 });
 
@@ -130,6 +129,69 @@ familySchema.methods.removeSharedResource = async function (resourceType, resour
         return resourceArray.length !== this.sharedResources[resourceType].length;
     }
     return false;
+};
+
+// Kiểm tra xem lời mời có tồn tại và còn hiệu lực cho một email cụ thể không
+familySchema.methods.hasValidPendingInvite = function (email) {
+    const invite = this.pendingInvites.find(pendingInvite =>
+        pendingInvite.email === email &&
+        new Date(pendingInvite.expiresAt) > new Date()
+    );
+    return !!invite;
+};
+
+// Xóa một lời mời đang chờ xử lý theo email
+familySchema.methods.removePendingInvite = function (email) {
+    const initialLength = this.pendingInvites.length;
+    this.pendingInvites = this.pendingInvites.filter(invite => invite.email !== email);
+    return this.pendingInvites.length < initialLength;
+};
+
+// Thêm hoặc cập nhật một lời mời
+familySchema.methods.upsertPendingInvite = function (email, invitedBy, expiresAt) {
+    const existingIndex = this.pendingInvites.findIndex(invite => invite.email === email);
+
+    if (existingIndex !== -1) {
+        // Cập nhật lời mời hiện có
+        this.pendingInvites[existingIndex].invitedBy = invitedBy;
+        this.pendingInvites[existingIndex].expiresAt = expiresAt;
+        return false; // Đã tồn tại và được cập nhật
+    } else {
+        // Tạo lời mời mới
+        this.pendingInvites.push({ email, invitedBy, expiresAt });
+        return true; // Lời mời mới được tạo
+    }
+};
+
+// Thêm một thành viên vào family
+familySchema.methods.addMember = function (userId) {
+    if (this.members.some(memberId => memberId.equals(userId))) {
+        return false; // Đã là thành viên
+    }
+    this.members.push(userId);
+    return true;
+};
+
+// Xóa một thành viên khỏi family
+familySchema.methods.removeMember = function (userId) {
+    const initialLength = this.members.length;
+    this.members = this.members.filter(memberId => !memberId.equals(userId));
+    return this.members.length < initialLength;
+};
+
+// Dọn dẹp các lời mời đã hết hạn
+familySchema.methods.cleanupExpiredInvites = function () {
+    const initialLength = this.pendingInvites.length;
+    this.pendingInvites = this.pendingInvites.filter(invite =>
+        new Date(invite.expiresAt) > new Date()
+    );
+    return this.pendingInvites.length < initialLength;
+};
+
+// Kiểm tra xem có thể tạo lời mời cho email này không
+familySchema.methods.canCreateInvite = function (email) {
+    return !this.members.some(member => member.email === email) &&
+        !this.pendingInvites.some(invite => invite.email === email);
 };
 
 export default mongoose.model('Family', familySchema);

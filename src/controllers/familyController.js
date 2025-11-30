@@ -1,21 +1,30 @@
-// Update file: controllers/family.js
 import Family from '../models/family.js';
 import User from '../models/user.js';
 import { sendFamilyInviteEmail } from '../services/mail/sendMailService.js';
 import { themedPage } from '../utils/webTheme.js';
 import { StatusCodes } from 'http-status-codes';
 import dayjs from 'dayjs';
+import crypto from 'crypto';
+import PushNotificationService from '../services/pushNotificationService.js';
 
-async function generateInviteCode() {
+const generateInviteCode = async (length = 8) => {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-    const len = 8;
+    const charLen = chars.length;
+    let attempts = 0;
+    const maxAttempts = 100;
     for (; ;) {
         let code = '';
-        for (let i = 0; i < len; i++) code += chars[Math.floor(Math.random() * chars.length)];
+        const buf = crypto.randomBytes(length);
+        for (let i = 0; i < length; i++) code += chars[buf[i] % charLen];
         const exists = await Family.findOne({ inviteCode: code }).lean();
         if (!exists) return code;
+        attempts++;
+        if (attempts >= maxAttempts) {
+            attempts = 0;
+            length += 1;
+        }
     }
-}
+};
 
 export const createFamily = async (req, res) => {
     const { name } = req.body;
@@ -60,82 +69,118 @@ export const createFamily = async (req, res) => {
             family: populatedFamily
         });
     } catch (error) {
-        if (error.code === 11000) {
-            return res.status(400).json({ error: 'Tên gia đình đã tồn tại' });
-        }
         console.error('Lỗi tạo family:', error);
         res.status(500).json({ error: 'Lỗi server' });
     }
 };
 
 export const generateInviteLink = async (req, res) => {
-    const user = await User.findById(req.userId);
-    if (!user.familyId || !user.isFamilyAdmin) return res.status(403).json({ error: 'Chỉ admin mới tạo link mời' });
+    try {
+        const user = await User.findById(req.userId);
+        if (!user.familyId || !user.isFamilyAdmin) {
+            return res.status(403).json({ error: 'Chỉ admin mới tạo link mời' });
+        }
 
-    const family = await Family.findById(user.familyId);
-    if (!family.inviteCode) {
-        family.inviteCode = await generateInviteCode();
-        await family.save();
+        const family = await Family.findById(user.familyId);
+        if (!family) {
+            return res.status(404).json({ error: 'Không tìm thấy gia đình' });
+        }
+
+        if (!family.inviteCode || family.inviteCode === 'null') {
+            family.inviteCode = await generateInviteCode();
+            await family.save();
+        }
+
+        const inviteLink = `${process.env.APP_URL}/join?familyCode=${family.inviteCode}`;
+
+        res.json({ message: 'Link mời đã tạo', inviteLink });
+    } catch (error) {
+        console.error('Lỗi tạo invite link:', error);
+        res.status(500).json({ error: 'Lỗi server' });
     }
-    const inviteLink = `${process.env.APP_URL}/join?familyCode=${family.inviteCode}`;
-
-    res.json({ message: 'Link mời đã tạo', inviteLink });
 };
 
 export const sendInviteEmail = async (req, res) => {
-    const { email } = req.body;
-    if (!email) return res.status(400).json({ error: 'Email là bắt buộc' });
+    try {
+        const { email } = req.body;
+        if (!email) return res.status(400).json({ error: 'Email là bắt buộc' });
 
-    const admin = await User.findById(req.userId);
-    if (!admin.familyId || !admin.isFamilyAdmin) {
-        return res.status(403).json({ error: 'Chỉ admin được mời' });
-    }
+        const admin = await User.findById(req.userId);
+        if (!admin.familyId || !admin.isFamilyAdmin) {
+            return res.status(403).json({ error: 'Chỉ admin được mời' });
+        }
 
-    const family = await Family.findById(admin.familyId);
-    if (!family) return res.status(404).json({ error: 'Không tìm thấy gia đình' });
-    if (!family.isActive) return res.status(400).json({ error: 'Gia đình đã bị vô hiệu hóa' });
+        const family = await Family.findById(admin.familyId);
+        if (!family) return res.status(404).json({ error: 'Không tìm thấy gia đình' });
+        if (!family.isActive) return res.status(400).json({ error: 'Gia đình đã bị vô hiệu hóa' });
 
-    // Kiểm tra đã là thành viên chưa
-    const existingMember = await User.findOne({ email, familyId: family._id });
-    if (existingMember) return res.status(400).json({ error: 'Đã là thành viên' });
+        // Kiểm tra đã là thành viên chưa - SỬA: dùng method isMember
+        const existingMember = await User.findOne({ email, familyId: family._id });
+        if (existingMember) return res.status(400).json({ error: 'Đã là thành viên' });
 
-    // Tạo pending invite
-    const expiresAt = dayjs().add(7, 'day').toDate();
-    const invite = family.pendingInvites.find(i => i.email === email);
-    if (invite) {
-        invite.expiresAt = expiresAt;
-        invite.invitedBy = req.userId;
-    } else {
-        family.pendingInvites.push({ email, invitedBy: req.userId, expiresAt });
-    }
-    await family.save();
+        // Tạo/cập nhật pending invite - SỬA: dùng method upsertPendingInvite
+        const expiresAt = dayjs().add(7, 'day').toDate();
+        family.upsertPendingInvite(email, req.userId, expiresAt);
+        await family.save();
 
-    // Tạo 2 link
-    const deepLink = `myapp://join-invite?familyCode=${family.inviteCode}&email=${encodeURIComponent(email)}`;
-    const webJoinLink = `${process.env.APP_URL}/api/family/join-web?familyCode=${family.inviteCode}&email=${encodeURIComponent(email)}`;
+        // Đảm bảo có invite code
+        if (!family.inviteCode || family.inviteCode === 'null') {
+            family.inviteCode = await generateInviteCode();
+            await family.save();
+        }
 
-    // Kiểm tra user đã tồn tại chưa
-    const userExists = await User.findOne({ email });
+        // Tạo 2 link
+        const deepLink = `myapp://join-invite?familyCode=${family.inviteCode}&email=${encodeURIComponent(email)}`;
+        const webJoinLink = `${process.env.APP_URL}/api/family/join-web?familyCode=${family.inviteCode}&email=${encodeURIComponent(email)}`;
 
-    res.json({
-        success: true,
-        message: 'Đã gửi lời mời',
-        webJoinLink,
-        deepLink,
-        userExists: !!userExists
-    });
-    setImmediate(() => {
-        const adminName = admin.username || admin.email;
-        const familyName = family.name;
-        sendFamilyInviteEmail({
-            to: email,
-            adminName,
-            familyName,
+        // Kiểm tra user đã tồn tại chưa
+        const userExists = await User.findOne({ email });
+        const userExistsBool = !!userExists;
+
+        res.json({
+            success: true,
+            message: 'Đã gửi lời mời',
             webJoinLink,
             deepLink,
-            userExists: !!userExists,
-        }).catch(() => { });
-    });
+            userExists: userExistsBool
+        });
+
+        const adminName = admin.username || admin.email;
+        setImmediate(() => {
+            sendFamilyInviteEmail({
+                to: email,
+                adminName,
+                familyName: family.name,
+                webJoinLink,
+                deepLink,
+                userExists: userExistsBool,
+            }).catch(() => { });
+        });
+
+        if (userExistsBool && userExists.fcmTokens?.length > 0) {
+            const messageData = {
+                familyCode: family.inviteCode,
+                email: email,
+                type: 'family_invite'
+            };
+
+            setImmediate(async () => {
+                try {
+                    await PushNotificationService.sendNotificationToUser(
+                        userExists,
+                        'Lời mời tham gia gia đình',
+                        `${adminName} đã mời bạn tham gia gia đình ${family.name}`,
+                        messageData
+                    );
+                } catch (error) {
+                    console.error('Error sending push notification:', error);
+                }
+            });
+        }
+    } catch (error) {
+        console.error('Lỗi gửi invite email:', error);
+        res.status(500).json({ error: 'Lỗi server' });
+    }
 };
 
 export const joinFamilyWeb = async (req, res) => {
@@ -164,6 +209,7 @@ export const joinFamilyWeb = async (req, res) => {
                 </div>
             `));
         }
+
         if (!family.isActive) {
             return res.status(400).send(themedPage(`
                 <h2 style="margin:0 0 8px;color:#ef4444;text-align:center">Gia đình đã bị vô hiệu hóa</h2>
@@ -171,12 +217,8 @@ export const joinFamilyWeb = async (req, res) => {
             `));
         }
 
-        // Kiểm tra invite hợp lệ
-        const invite = family.pendingInvites.find(i =>
-            i.email === email && dayjs(i.expiresAt).isAfter(dayjs())
-        );
-
-        if (!invite) {
+        // SỬA: dùng method hasValidPendingInvite
+        if (!family.hasValidPendingInvite(email)) {
             return res.status(400).send(themedPage(`
                 <h2 style="margin:0 0 8px;color:#ef4444;text-align:center">Lời mời đã hết hạn</h2>
                 <p style="color:#6b7280;text-align:center">Lời mời này đã hết hạn hoặc không tồn tại.</p>
@@ -203,10 +245,10 @@ export const joinFamilyWeb = async (req, res) => {
             `));
         }
 
-        // Kiểm tra đã là thành viên chưa
-        if (family.members.some(m => m.toString() === user._id.toString())) {
-            // Xóa pending invite
-            family.pendingInvites = family.pendingInvites.filter(i => i._id !== invite._id);
+        // SỬA: dùng method isMember
+        if (family.isMember(user._id)) {
+            // Xóa pending invite - SỬA: dùng method removePendingInvite
+            family.removePendingInvite(email);
             await family.save();
 
             return res.send(themedPage(`
@@ -230,14 +272,14 @@ export const joinFamilyWeb = async (req, res) => {
             `));
         }
 
-        // Join thành công
-        family.members.push(user._id);
-        family.pendingInvites = family.pendingInvites.filter(i => i._id !== invite._id);
+        // Join thành công - SỬA: dùng method addMember
+        family.addMember(user._id);
+        family.removePendingInvite(email);
         await family.save();
 
         await User.findByIdAndUpdate(user._id, {
             familyId: family._id,
-            isFamilyAdmin: false  // Default không phải admin
+            isFamilyAdmin: false
         });
 
         res.send(themedPage(`
@@ -262,58 +304,103 @@ export const joinFamilyWeb = async (req, res) => {
 };
 
 export const leaveFamily = async (req, res) => {
-    const user = await User.findById(req.userId);
-    if (!user.familyId) return res.status(400).json({ error: 'Bạn chưa tham gia nhóm nào' });
-
-    const family = await Family.findById(user.familyId);
-
-    // Kiểm tra nếu là admin và là thành viên cuối cùng
-    const isAdmin = family.adminId.toString() === req.userId.toString();
-    const currentMemberCount = family.members.length;
-
-    // Loại bỏ thành viên trước
-    family.members = family.members.filter(id => id.toString() !== req.userId.toString());
-
-    if (isAdmin) {
-        if (family.members.length > 0) {
-            // Chuyển admin cho thành viên khác
-            family.adminId = family.members[0];
-            await User.findByIdAndUpdate(family.members[0], { isFamilyAdmin: true });
-        } else {
-            // Xóa family nếu không còn thành viên
-            await Family.deleteOne({ _id: family._id });
-            await User.findByIdAndUpdate(req.userId, {
-                familyId: null,
-                isFamilyAdmin: false
-            });
-            return res.json({ message: 'Đã xóa nhóm gia đình (thành viên cuối cùng)' });
+    try {
+        const user = await User.findById(req.userId);
+        if (!user.familyId) {
+            return res.status(400).json({ error: 'Bạn chưa tham gia nhóm nào' });
         }
+
+        const family = await Family.findById(user.familyId);
+        if (!family) {
+            return res.status(404).json({ error: 'Không tìm thấy gia đình' });
+        }
+
+        // SỬA: dùng method isAdmin
+        const isAdmin = family.isAdmin(req.userId);
+
+        // SỬA: dùng method removeMember
+        family.removeMember(req.userId);
+
+        if (isAdmin) {
+            if (family.members.length > 0) {
+                // Chuyển admin cho thành viên khác
+                family.adminId = family.members[0];
+                await User.findByIdAndUpdate(family.members[0], { isFamilyAdmin: true });
+                await family.save();
+            } else {
+                // Xóa family nếu không còn thành viên
+                await Family.deleteOne({ _id: family._id });
+                await User.findByIdAndUpdate(req.userId, {
+                    familyId: null,
+                    isFamilyAdmin: false
+                });
+                return res.json({ message: 'Đã xóa nhóm gia đình (thành viên cuối cùng)' });
+            }
+        } else {
+            await family.save();
+        }
+
+        await User.findByIdAndUpdate(req.userId, {
+            familyId: null,
+            isFamilyAdmin: false
+        });
+
+        res.json({ message: 'Đã rời nhóm gia đình' });
+    } catch (error) {
+        console.error('Lỗi leave family:', error);
+        res.status(500).json({ error: 'Lỗi server' });
     }
-
-    await family.save();
-    await User.findByIdAndUpdate(req.userId, { familyId: null, isFamilyAdmin: false });
-
-    res.json({ message: 'Đã rời nhóm gia đình' });
 };
 
 export const getFamilyMembers = async (req, res) => {
-    const user = await User.findById(req.userId);
-    if (!user.familyId) return res.status(400).json({ error: 'Bạn chưa tham gia nhóm nào' });
+    try {
+        const user = await User.findById(req.userId);
+        if (!user.familyId) {
+            return res.status(400).json({ error: 'Bạn chưa tham gia nhóm nào' });
+        }
 
-    const family = await Family.findById(user.familyId).populate('members', 'username email avatar');
-    res.json(family.members);
+        const family = await Family.findById(user.familyId)
+            .populate('members', 'username email avatar');
+
+        if (!family) {
+            return res.status(404).json({ error: 'Không tìm thấy gia đình' });
+        }
+
+        res.json(family.members);
+    } catch (error) {
+        console.error('Lỗi get family members:', error);
+        res.status(500).json({ error: 'Lỗi server' });
+    }
 };
 
 export const dissolveFamily = async (req, res) => {
-    const user = await User.findById(req.userId);
     try {
-        if (!user.familyId) return res.status(StatusCodes.BAD_REQUEST).json({ error: 'Bạn chưa tham gia nhóm nào' });
+        const user = await User.findById(req.userId);
+        if (!user.familyId) {
+            return res.status(StatusCodes.BAD_REQUEST).json({
+                error: 'Bạn chưa tham gia nhóm nào'
+            });
+        }
 
         const family = await Family.findById(user.familyId);
-        if (family.adminId.toString() !== req.userId.toString()) return res.status(StatusCodes.FORBIDDEN).json({ error: 'Chỉ có admin mới có thể phá hủy nhóm' });
+        if (!family) {
+            return res.status(StatusCodes.NOT_FOUND).json({
+                error: 'Không tìm thấy gia đình'
+            });
+        }
+
+        // SỬA: dùng method isAdmin
+        if (!family.isAdmin(req.userId)) {
+            return res.status(StatusCodes.FORBIDDEN).json({
+                error: 'Chỉ có admin mới có thể phá hủy nhóm'
+            });
+        }
 
         await Family.deleteOne({ _id: family._id });
-        await User.updateMany({ familyId: family._id }, { familyId: null, isFamilyAdmin: false });
+        await User.updateMany(
+            { familyId: family._id },
+            { familyId: null, isFamilyAdmin: false }
+        );
 
         res.status(StatusCodes.OK).json({ message: 'Đã phá hủy nhóm gia đình' });
     } catch (err) {
@@ -323,46 +410,110 @@ export const dissolveFamily = async (req, res) => {
 };
 
 export const updateSharingSettings = async (req, res) => {
-    const userDoc = await User.findById(req.userId);
-    if (!userDoc?.familyId) return res.status(400).json({ error: 'Bạn chưa tham gia nhóm nào' });
-    const family = await Family.findById(userDoc.familyId);
-    if (family.adminId.toString() !== req.userId.toString()) return res.status(403).json({ error: 'Chỉ admin mới chỉnh chia sẻ' });
-    const { transactionVisibility, walletVisibility, goalVisibility } = req.body;
-    const tv = ['all', 'only_income', 'none'];
-    const wv = ['all', 'owner_only', 'summary_only'];
-    const gv = ['all', 'owner_only'];
-    if (transactionVisibility && !tv.includes(transactionVisibility)) return res.status(400).json({ error: 'transactionVisibility không hợp lệ' });
-    if (walletVisibility && !wv.includes(walletVisibility)) return res.status(400).json({ error: 'walletVisibility không hợp lệ' });
-    if (goalVisibility && !gv.includes(goalVisibility)) return res.status(400).json({ error: 'goalVisibility không hợp lệ' });
-    family.sharingSettings = {
-        transactionVisibility: transactionVisibility || family.sharingSettings.transactionVisibility,
-        walletVisibility: walletVisibility || family.sharingSettings.walletVisibility,
-        goalVisibility: goalVisibility || family.sharingSettings.goalVisibility,
-    };
-    await family.save();
-    res.json({ success: true, sharingSettings: family.sharingSettings });
+    try {
+        const userDoc = await User.findById(req.userId);
+        if (!userDoc?.familyId) {
+            return res.status(400).json({ error: 'Bạn chưa tham gia nhóm nào' });
+        }
+
+        const family = await Family.findById(userDoc.familyId);
+        if (!family) {
+            return res.status(404).json({ error: 'Không tìm thấy gia đình' });
+        }
+
+        // SỬA: dùng method isAdmin
+        if (!family.isAdmin(req.userId)) {
+            return res.status(403).json({ error: 'Chỉ admin mới chỉnh chia sẻ' });
+        }
+
+        const { transactionVisibility, walletVisibility, goalVisibility } = req.body;
+        const tv = ['all', 'only_income', 'none'];
+        const wv = ['all', 'owner_only', 'summary_only'];
+        const gv = ['all', 'owner_only'];
+
+        if (transactionVisibility && !tv.includes(transactionVisibility)) {
+            return res.status(400).json({ error: 'transactionVisibility không hợp lệ' });
+        }
+        if (walletVisibility && !wv.includes(walletVisibility)) {
+            return res.status(400).json({ error: 'walletVisibility không hợp lệ' });
+        }
+        if (goalVisibility && !gv.includes(goalVisibility)) {
+            return res.status(400).json({ error: 'goalVisibility không hợp lệ' });
+        }
+
+        family.sharingSettings = {
+            transactionVisibility: transactionVisibility || family.sharingSettings.transactionVisibility,
+            walletVisibility: walletVisibility || family.sharingSettings.walletVisibility,
+            goalVisibility: goalVisibility || family.sharingSettings.goalVisibility,
+        };
+
+        await family.save();
+        res.json({ success: true, sharingSettings: family.sharingSettings });
+    } catch (error) {
+        console.error('Lỗi update sharing settings:', error);
+        res.status(500).json({ error: 'Lỗi server' });
+    }
 };
 
 export const addSharedResource = async (req, res) => {
-    const userDoc = await User.findById(req.userId);
-    if (!userDoc?.familyId) return res.status(400).json({ error: 'Bạn chưa tham gia nhóm nào' });
-    const family = await Family.findById(userDoc.familyId);
-    if (family.adminId.toString() !== req.userId.toString()) return res.status(403).json({ error: 'Chỉ admin mới chỉnh tài nguyên' });
-    const { resourceType, resourceId } = req.body;
-    const allowed = ['budgets', 'wallets', 'goals'];
-    if (!allowed.includes(resourceType)) return res.status(400).json({ error: 'resourceType không hợp lệ' });
-    const added = await family.addSharedResource(resourceType, resourceId);
-    res.json({ success: true, added });
+    try {
+        const userDoc = await User.findById(req.userId);
+        if (!userDoc?.familyId) {
+            return res.status(400).json({ error: 'Bạn chưa tham gia nhóm nào' });
+        }
+
+        const family = await Family.findById(userDoc.familyId);
+        if (!family) {
+            return res.status(404).json({ error: 'Không tìm thấy gia đình' });
+        }
+
+        // SỬA: dùng method isAdmin
+        if (!family.isAdmin(req.userId)) {
+            return res.status(403).json({ error: 'Chỉ admin mới chỉnh tài nguyên' });
+        }
+
+        const { resourceType, resourceId } = req.body;
+        const allowed = ['budgets', 'wallets', 'goals'];
+        if (!allowed.includes(resourceType)) {
+            return res.status(400).json({ error: 'resourceType không hợp lệ' });
+        }
+
+        // SỬA: method đã có sẵn trong schema
+        const added = await family.addSharedResource(resourceType, resourceId);
+        res.json({ success: true, added });
+    } catch (error) {
+        console.error('Lỗi add shared resource:', error);
+        res.status(500).json({ error: 'Lỗi server' });
+    }
 };
 
 export const removeSharedResource = async (req, res) => {
-    const userDoc = await User.findById(req.userId);
-    if (!userDoc?.familyId) return res.status(400).json({ error: 'Bạn chưa tham gia nhóm nào' });
-    const family = await Family.findById(userDoc.familyId);
-    if (family.adminId.toString() !== req.userId.toString()) return res.status(403).json({ error: 'Chỉ admin mới chỉnh tài nguyên' });
-    const { resourceType, resourceId } = req.body;
-    const allowed = ['budgets', 'wallets', 'goals'];
-    if (!allowed.includes(resourceType)) return res.status(400).json({ error: 'resourceType không hợp lệ' });
-    const removed = await family.removeSharedResource(resourceType, resourceId);
-    res.json({ success: true, removed });
+    try {
+        const userDoc = await User.findById(req.userId);
+        if (!userDoc?.familyId) {
+            return res.status(400).json({ error: 'Bạn chưa tham gia nhóm nào' });
+        }
+
+        const family = await Family.findById(userDoc.familyId);
+        if (!family) {
+            return res.status(404).json({ error: 'Không tìm thấy gia đình' });
+        }
+
+        if (!family.isAdmin(req.userId)) {
+            return res.status(403).json({ error: 'Chỉ admin mới chỉnh tài nguyên' });
+        }
+
+        const { resourceType, resourceId } = req.body;
+        const allowed = ['budgets', 'wallets', 'goals'];
+        if (!allowed.includes(resourceType)) {
+            return res.status(400).json({ error: 'resourceType không hợp lệ' });
+        }
+
+        // SỬA: gọi method từ family, không phải family.adminId
+        const removed = await family.removeSharedResource(resourceType, resourceId);
+        res.json({ success: true, removed });
+    } catch (error) {
+        console.error('Lỗi remove shared resource:', error);
+        res.status(500).json({ error: 'Lỗi server' });
+    }
 };

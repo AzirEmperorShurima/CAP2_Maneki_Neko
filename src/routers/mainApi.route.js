@@ -6,7 +6,6 @@ import { jwtAuth } from "../middlewares/auth.js";
 import testRouter from "./testRouter.js";
 import transactionRouter from "./transaction.route.js";
 import familyRouter from "./family.route.js";
-import { joinFamilyWeb } from "../controllers/familyController.js";
 import goalRouter from "./goal.route.js";
 import walletRouter from "./wallet.route.js";
 import budgetRouter from "./budget.route.js";

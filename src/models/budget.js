@@ -15,34 +15,49 @@ const budgetSchema = new mongoose.Schema({
         type: Number,
         required: true,
         min: 0
-    }, // Số tiền tối đa được phép chi tiêu trong khoảng thời gian
+    },
+    parentBudgetId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Budget',
+        default: null
+    }, // Budget cha (ví dụ: daily budget có parent là monthly budget)
+    isDerived: {
+        type: Boolean,
+        default: false
+    }, // Budget này có được tự động tạo từ budget cha không
     familyId: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Family'
     },
-    isShared: { // isShared: true nếu ngân sách chia sẻ giữa nhiều người trong gia đình
+    isShared: {
         type: Boolean,
         default: false
     },
     categoryId: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Category'
-    }, // Có thể áp dụng cho một danh mục cụ thể hoặc null (áp dụng cho tất cả)
+    },
     isActive: {
         type: Boolean,
         default: true
-    }, // Trạng thái hoạt động của budget
+    },
     periodStart: {
-        type: Date
-    }, // Ngày bắt đầu của kỳ budget (tự động tính toán dựa trên type)
+        type: Date,
+        required: true
+    },
     periodEnd: {
-        type: Date
-    } // Ngày kết thúc của kỳ budget
+        type: Date,
+        required: true
+    },
+    spentAmount: {
+        type: Number,
+        default: 0
+    } // Số tiền đã chi trong kỳ hiện tại
 }, { timestamps: true });
 
-// Index 
-budgetSchema.index({ userId: 1, type: 1 });
-budgetSchema.index({ userId: 1, isActive: 1 });
+// Index
+budgetSchema.index({ userId: 1, type: 1, isActive: 1 });
+budgetSchema.index({ userId: 1, parentBudgetId: 1 });
 budgetSchema.index({ familyId: 1 });
 
 export default mongoose.model("Budget", budgetSchema);

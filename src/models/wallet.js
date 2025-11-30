@@ -36,7 +36,11 @@ const walletSchema = new mongoose.Schema({
     isShared: {
         type: Boolean,
         default: false
-    }, // true nếu wallet được chia sẻ với các thành viên khác trong family
+    },
+    isDefault: {
+        type: Boolean,
+        default: false
+    },
     description: {
         type: String,
         trim: true,
