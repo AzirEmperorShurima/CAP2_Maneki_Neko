@@ -33,7 +33,51 @@ const updateGoalProgressFromTransaction = async (transaction, userId) => {
     console.error('Lỗi cập nhật tiến độ goal từ giao dịch:', error);
   }
 };
+const calculatePeriodDates = (period, customStart, customEnd) => {
+  const now = dayjs();
 
+  let periodStart, periodEnd;
+
+  switch (period) {
+    case 'daily':
+      periodStart = now.startOf('day').toDate();
+      periodEnd = now.endOf('day').toDate();
+      break;
+    case 'weekly':
+      periodStart = now.startOf('week').toDate();
+      periodEnd = now.endOf('week').toDate();
+      break;
+    case 'monthly':
+      periodStart = now.startOf('month').toDate();
+      periodEnd = now.endOf('month').toDate();
+      break;
+    default:
+      throw new Error('Period không hợp lệ');
+  }
+
+  return { periodStart, periodEnd };
+};
+
+// Hàm tìm budget cha phù hợp
+const findParentBudget = async (userId, childPeriod, periodStart, periodEnd) => {
+  const parentPeriodMap = {
+    'daily': 'weekly',
+    'weekly': 'monthly'
+  };
+
+  const possibleParentPeriod = parentPeriodMap[childPeriod];
+  if (!possibleParentPeriod) return null;
+
+  const parentBudget = await Budget.findOne({
+    userId,
+    type: possibleParentPeriod,
+    isActive: true,
+    periodStart: { $lte: periodStart },
+    periodEnd: { $gte: periodEnd }
+  });
+
+  return parentBudget;
+};
 export const geminiChatController = async (req, res) => {
   try {
     const { message } = req.body;
@@ -125,21 +169,72 @@ export const geminiChatController = async (req, res) => {
     // 2. Đặt ngân sách
     // ==================================================================
     else if (data.action === 'set_budget') {
-      const categoryId = data.category_name
-        ? (await Category.findOne({
-          name: { $regex: new RegExp(`^${escapeRegExp(data.category_name)}$`, 'i') }
-        }))?._id || null
-        : null;
+      try {
+        // Tìm category nếu có
+        const categoryId = data.category_name
+          ? (await Category.findOne({
+            name: { $regex: new RegExp(`^${escapeRegExp(data.category_name)}$`, 'i') }
+          }))?._id || null
+          : null;
 
-      await Budget.findOneAndUpdate(
-        { userId: req.userId, type: data.period, categoryId },
-        { amount: data.amount },
-        { upsert: true, new: true }
-      );
+        const { periodStart, periodEnd } = calculatePeriodDates(data.period);
 
-      const periodVi = data.period === 'daily' ? 'ngày' : data.period === 'weekly' ? 'tuần' : 'tháng';
-      const catText = data.category_name ? ` cho **${data.category_name}**` : ' tổng';
-      reply = `Đã đặt ngân sách **${data.amount.toLocaleString()}đ/${periodVi}${catText}**. Mình sẽ nhắc nếu bạn sắp vượt nhé!`;
+        // Tìm budget cha nếu có thể
+        let parentBudgetId = null;
+        const parentBudget = await findParentBudget(req.userId, data.period, periodStart, periodEnd);
+
+        if (parentBudget) {
+          parentBudgetId = parentBudget._id;
+        }
+
+        // Kiểm tra xem đã có budget cho khoảng thời gian này chưa
+        const existingBudget = await Budget.findOne({
+          userId: req.userId,
+          type: data.period,
+          categoryId: categoryId || null,
+          periodStart,
+          periodEnd,
+          isActive: true
+        });
+
+        let budget;
+        if (existingBudget) {
+          // Nếu đã có budget cho khoảng thời gian này, cập nhật số tiền
+          existingBudget.amount = data.amount;
+          budget = await existingBudget.save();
+          reply = `Đã cập nhật ngân sách ${data.category_name ? `cho ${data.category_name}` : 'tổng'} cho khoảng thời gian này thành ${data.amount.toLocaleString()}đ.`;
+        } else {
+          // Tạo budget mới
+          budget = new Budget({
+            userId: req.userId,
+            type: data.period,
+            amount: data.amount,
+            categoryId: categoryId || null,
+            parentBudgetId: parentBudgetId,
+            periodStart,
+            periodEnd,
+            spentAmount: 0,
+            isActive: true
+          });
+
+          await budget.save();
+          reply = `Đã đặt ngân sách ${data.category_name ? `cho ${data.category_name}` : 'tổng'} ${data.amount.toLocaleString()}đ cho ${data.period}.`;
+        }
+
+        // Thông báo nếu có budget cha
+        if (parentBudgetId) {
+          const parentBudget = await Budget.findById(parentBudgetId).populate('categoryId');
+          const parentPeriodText = parentBudget.type === 'monthly' ? 'tháng' : parentBudget.type === 'weekly' ? 'tuần' : 'ngày';
+          const parentCategoryText = parentBudget.categoryId ? `cho ${parentBudget.categoryId.name}` : 'tổng';
+          reply += ` Ngân sách này là một phần của ngân sách cha ${parentCategoryText} ${parentBudget.amount.toLocaleString()}đ/${parentPeriodText}.`;
+        }
+
+      } catch (error) {
+        console.error('Lỗi khi tạo/cập nhật ngân sách:', error);
+        return res.json({
+          reply: 'Có lỗi xảy ra khi đặt ngân sách. Vui lòng thử lại.'
+        });
+      }
     }
 
     // ==================================================================

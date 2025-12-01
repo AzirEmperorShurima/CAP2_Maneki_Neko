@@ -5,16 +5,24 @@ import { models_list } from "./src/models/models_list.js";
 
 const MONGO_ATLAS_URI = process.env.MONGO_URI_ATLAS;
 const MONGO_RAILWAY_URI = process.env.MONGO_URI_RAILWAY;
-const MONGO_LOCAL_URI = "mongodb://localhost:27017/Maneki_Neko";
+const MONGO_LOCAL_URI = process.env.MONGO_URI_LOCAL;
 
 const MAX_RETRIES = 5;
 const RETRY_INTERVAL = 5000;
 
-const checkMongoConnection = async () => {
-    if (mongoose.connection.readyState === 1) {
-        return true;
-    }
-    return false;
+// Flag để track connection đang được thiết lập
+let isConnecting = false;
+let connectionPromise = null;
+
+const checkMongoConnection = () => {
+    // 0 = disconnected, 1 = connected, 2 = connecting, 3 = disconnecting
+    const state = mongoose.connection.readyState;
+    return {
+        isConnected: state === 1,
+        isConnecting: state === 2,
+        isDisconnecting: state === 3,
+        isDisconnected: state === 0
+    };
 };
 
 export const initializeCollections = async (models) => {
@@ -40,17 +48,38 @@ export const initializeCollections = async (models) => {
     );
 };
 
+const closeExistingConnection = async () => {
+    const { isConnected, isConnecting } = checkMongoConnection();
+
+    if (isConnected || isConnecting) {
+        console.log("🔌 Đóng connection hiện tại...");
+        try {
+            await mongoose.connection.close(false); // false = không force close
+            console.log("✅ Đã đóng connection cũ");
+        } catch (error) {
+            console.error("❌ Lỗi khi đóng connection:", error);
+            // Force close nếu close bình thường thất bại
+            await mongoose.connection.close(true);
+        }
+    }
+};
+
 const tryConnectToMongo = async (uri, label) => {
     try {
         console.log(`📡 Đang thử kết nối ${label}...`);
 
-        // Cấu hình connection options dựa trên MongoDB Atlas recommended settings
+        // Đảm bảo không có connection cũ
+        await closeExistingConnection();
+
         const connectionOptions = {
             serverSelectionTimeoutMS: 5000,
             socketTimeoutMS: 45000,
+            dbName: process.env.DB_NAME,
+            maxPoolSize: 10, // Giới hạn số connection trong pool
+            minPoolSize: 2,  // Số connection tối thiểu
+            maxIdleTimeMS: 30000, // Đóng connection idle sau 30s
         };
 
-        // Thêm serverApi cho MongoDB Atlas
         if (label === "MongoDB Atlas") {
             connectionOptions.serverApi = {
                 version: '1',
@@ -60,19 +89,16 @@ const tryConnectToMongo = async (uri, label) => {
         }
 
         await mongoose.connect(uri, connectionOptions);
-
-        // Ping để xác nhận kết nối (tương tự code mẫu MongoDB Atlas)
         await mongoose.connection.db.admin().command({ ping: 1 });
 
         console.log(`✅ Kết nối ${label} thành công! Đã ping database thành công.`);
+        console.log(`Database Name: ${mongoose.connection.db.databaseName}`);
         return true;
     } catch (error) {
         console.error(`❌ Kết nối ${label} thất bại:`, error.message);
 
         // Đảm bảo đóng connection nếu có lỗi
-        if (mongoose.connection.readyState !== 0) {
-            await mongoose.connection.close();
-        }
+        await closeExistingConnection();
 
         return false;
     }
@@ -96,15 +122,29 @@ const connectWithFallback = async () => {
     }
 
     // Fallback cuối cùng sang Local
-    console.log("⚠️ Đang fallback sang MongoDB Local...");
-    const localConnected = await tryConnectToMongo(MONGO_LOCAL_URI, "MongoDB Local");
-    return localConnected;
+    if (MONGO_LOCAL_URI) {
+        console.log("⚠️ Đang fallback sang MongoDB Local...");
+        const localConnected = await tryConnectToMongo(MONGO_LOCAL_URI, "MongoDB Local");
+        return localConnected;
+    } else {
+        console.log("⚠️ MongoDB Local URI không được cấu hình (MONGO_URI_LOCAL)");
+        return false;
+    }
 };
 
 const reconnectWithRetry = async (retryCount = 0) => {
+    // Nếu đang connecting, đợi thay vì tạo connection mới
+    if (isConnecting && connectionPromise) {
+        console.log("⏳ Connection đang được thiết lập, đang đợi...");
+        return connectionPromise;
+    }
+
     try {
+        isConnecting = true;
         const connected = await connectWithFallback();
+
         if (connected) {
+            isConnecting = false;
             return true;
         }
 
@@ -123,47 +163,81 @@ const reconnectWithRetry = async (retryCount = 0) => {
             return reconnectWithRetry(retryCount + 1);
         } else {
             console.error("❌ Đã vượt quá số lần thử kết nối tối đa!");
+            isConnecting = false;
             return false;
         }
     }
 };
 
 export const connectToDatabase = async () => {
+    // Nếu đang có connection hoạt động, return luôn
+    const { isConnected, isConnecting: currentlyConnecting } = checkMongoConnection();
+    if (isConnected) {
+        console.log("✅ MongoDB đã được kết nối sẵn");
+        return;
+    }
+
+    // Nếu đang connecting, đợi connection hiện tại hoàn thành
+    if (currentlyConnecting || isConnecting) {
+        console.log("⏳ Đang có connection đang được thiết lập, đợi hoàn thành...");
+        if (connectionPromise) {
+            await connectionPromise;
+            return;
+        }
+    }
+
     try {
         console.log("🔄 Đang kiểm tra kết nối MongoDB...");
         console.log("📋 Fallback chain: Atlas → Railway → Local");
 
-        const isConnected = await checkMongoConnection();
-        if (!isConnected) {
-            console.log("📡 Đang thiết lập kết nối mới với fallback chain...");
-            const connectionSuccess = await reconnectWithRetry();
-            if (!connectionSuccess) {
-                throw new Error("Không thể kết nối đến MongoDB sau nhiều lần thử");
-            }
-        } else {
-            console.log("✅ MongoDB đã được kết nối sẵn");
+        // Tạo promise mới cho connection
+        connectionPromise = reconnectWithRetry();
+        const connectionSuccess = await connectionPromise;
+
+        if (!connectionSuccess) {
+            throw new Error("Không thể kết nối đến MongoDB sau nhiều lần thử");
         }
 
         await initializeCollections(models_list);
         await category.deleteMany({});
         await category.insertMany(initialCats);
 
-        mongoose.connection.on("disconnected", async () => {
-            console.log("⚠️ MongoDB đã ngắt kết nối! Đang thử kết nối lại...");
-            await reconnectWithRetry();
-        });
+        // Setup event handlers (chỉ setup 1 lần)
+        setupConnectionHandlers();
 
-        mongoose.connection.on("error", (error) => {
-            console.error("❌ Lỗi kết nối MongoDB:", error);
-        });
+        connectionPromise = null;
     } catch (err) {
         console.error("❌ Lỗi trong quá trình kết nối database:", err);
+        connectionPromise = null;
+        isConnecting = false;
         throw err;
     }
 };
 
+// Tách riêng event handlers để tránh đăng ký nhiều lần
+let handlersSetup = false;
+
+const setupConnectionHandlers = () => {
+    if (handlersSetup) return;
+
+    mongoose.connection.on("disconnected", async () => {
+        console.log("⚠️ MongoDB đã ngắt kết nối! Đang thử kết nối lại...");
+        isConnecting = false;
+        connectionPromise = null;
+        await reconnectWithRetry();
+    });
+
+    mongoose.connection.on("error", (error) => {
+        console.error("❌ Lỗi kết nối MongoDB:", error);
+    });
+
+    handlersSetup = true;
+};
+
 process.on("SIGINT", async () => {
     try {
+        isConnecting = false;
+        connectionPromise = null;
         await mongoose.connection.close();
         console.log("📴 Đã đóng kết nối MongoDB an toàn");
         process.exit(0);

@@ -5,6 +5,7 @@ import { validateCreateTransaction } from "../validations/transaction.js";
 
 import * as transactionService from '../services/transactions/analytics/transactionAlalytics.js';
 import { checkBudgetWarning, updateBudgetSpentAmounts } from "../utils/budget.js";
+import { getOrCreateDefaultWallet } from "../utils/wallet.js";
 
 // for self learning AI module in future
 // export const correctTransaction = async (req, res) => {
@@ -236,23 +237,50 @@ export const getTransactions = async (req, res) => {
 
         const { type, search, startDate, endDate } = req.query;
 
-        const match = {
+        // Base match để lấy tất cả transaction của user và transaction chia sẻ trong family
+        let match = {
             $or: [
-                { userId: user._id },
-                { familyId: user.familyId, isShared: true }
+                { userId: _user._id },
+                { familyId: _user.familyId, isShared: true }
             ]
         };
 
-        if (type && ['income', 'expense'].includes(type)) match.type = type;
-        if (startDate) match.date = { ...match.date, $gte: new Date(startDate) };
-        if (endDate) match.date = { ...match.date, $lte: new Date(endDate) };
-        if (search) {
+        // Chỉ thêm các điều kiện lọc khi chúng được cung cấp và có giá trị hợp lệ
+        if (type && ['income', 'expense'].includes(type)) {
+            match.type = type;
+        }
+
+        if (startDate || endDate) {
+            match.date = {};
+            if (startDate) {
+                match.date.$gte = new Date(startDate);
+            }
+            if (endDate) {
+                match.date.$lte = new Date(endDate);
+            }
+        }
+
+        // Xử lý tìm kiếm
+        if (search && search.trim()) {
             const regex = { $regex: search.trim(), $options: 'i' };
-            match.$or = [
-                { description: regex },
-                { voiceText: regex },
-                { ocrText: regex }
-            ];
+            const searchCondition = {
+                $or: [
+                    { description: regex },
+                    { voiceText: regex },
+                    { ocrText: regex }
+                ]
+            };
+
+            // Nếu đã có điều kiện khác, thêm search condition vào match
+            // Nếu chưa có điều kiện khác, chỉ sử dụng search condition
+            if (Object.keys(match).length > 1) { // > 1 vì đã có $or base
+                match.$and = [
+                    match,
+                    searchCondition
+                ];
+            } else {
+                match = searchCondition;
+            }
         }
 
         const [transactions, total] = await Promise.all([

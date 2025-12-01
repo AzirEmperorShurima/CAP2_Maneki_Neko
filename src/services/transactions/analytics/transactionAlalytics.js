@@ -34,8 +34,6 @@ export const getTransactionChartData = async (userId, month = dayjs().format('YY
         categories.forEach(c => {
             catMap[c._id.toString()] = {
                 name: c.name,
-                icon: c.icon || 'HelpCircle',
-                color: c.color || (c.type === 'income' ? '#10b981' : '#ef4444')
             };
         });
 
@@ -84,8 +82,6 @@ export const getTransactionChartData = async (userId, month = dayjs().format('YY
         const byCategory = categoryData.map(item => {
             const cat = catMap[item._id?.toString()] || {
                 name: 'Khác',
-                icon: 'HelpCircle',
-                color: '#94a3b8'
             };
             return {
                 categoryId: item._id,
@@ -99,7 +95,7 @@ export const getTransactionChartData = async (userId, month = dayjs().format('YY
 
         const totalAmount = dailyTrend.reduce((sum, d) => sum + d.total, 0);
 
-        res.json({
+        return {
             success: true,
             period: month,
             type,
@@ -109,10 +105,10 @@ export const getTransactionChartData = async (userId, month = dayjs().format('YY
                 dailyTrend,
                 byCategory
             }
-        });
+        };
 
     } catch (error) {
         console.error('Lỗi chart data:', error);
-        res.status(500).json({ error: 'Lỗi server' });
+        return { error: 'Lỗi server' }; 
     }
 };

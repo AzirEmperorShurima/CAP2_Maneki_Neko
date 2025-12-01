@@ -57,11 +57,11 @@ export const login = async (req, res) => {
 
         const { accountName, password,
             //  deviceId, fcmToken, platform
-             } = value;
+        } = value;
         const _user = await user.findOne({ accountName });
 
         if (!_user) {
-            return res.status(404).json({ error: 'Tên đăng nhập không tồn tại' });
+            return res.status(404).json({ error: 'Tên đăng nhập hoặc mật khẩu không đúng' });
         }
 
         // Kiểm tra xem tài khoản có mật khẩu không
@@ -402,7 +402,7 @@ export const deleteUser = async (req, res) => {
 
 export const getUserProfile = async (req, res) => {
     try {
-        const user = await user.findById(req.userId)
+        const userDoc = await user.findById(req.userId)
             .select('-googleId -__v')
             .populate({
                 path: 'familyId',
@@ -413,21 +413,21 @@ export const getUserProfile = async (req, res) => {
                 }
             });
 
-        if (!user) {
+        if (!userDoc) {
             return res.status(404).json({ error: 'Không tìm thấy người dùng' });
         }
 
         const response = {
-            _id: user._id,
-            username: user.username || null,
-            email: user.email,
-            avatar: user.avatar || null,
+            _id: userDoc._id,
+            username: userDoc.username || null,
+            email: userDoc.email,
+            avatar: userDoc.avatar || null,
             family: null,
-            isFamilyAdmin: user.isFamilyAdmin || false,
+            isFamilyAdmin: userDoc.isFamilyAdmin || false,
         };
 
-        if (user.familyId) {
-            const family = user.familyId;
+        if (userDoc.familyId) {
+            const family = userDoc.familyId;
 
             response.family = {
                 _id: family._id,

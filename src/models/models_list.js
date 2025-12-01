@@ -18,5 +18,5 @@ export const models_list = {
     goal,
     wallet,
     refreshToken
-
+    
 }
