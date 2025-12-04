@@ -228,16 +228,18 @@ export const verifyGoogleId = async (req, res) => {
 
         res.json({
             message: 'Đăng nhập thành công',
-            user: {
-                id: user._id,
-                username: user.username,
-                email: user.email,
-                avatar: user.avatar || null,
-                authProvider: user.authProvider
-            },
-            accessToken,
-            // refreshToken: refreshTokenValue,
-            expiresAt: 7 * 24 * 60 * 60
+            data: {
+                user: {
+                    id: user._id,
+                    username: user.username,
+                    email: user.email,
+                    avatar: user.avatar || null,
+                    authProvider: user.authProvider
+                },
+                accessToken,
+                // refreshToken: refreshTokenValue,
+                expiresAt: 7 * 24 * 60 * 60
+            }
         });
 
         // Register FCM token (async)
@@ -278,7 +280,6 @@ export const logout = async (req, res) => {
             : 'Đã đăng xuất thiết bị thành công';
 
         res.json({
-            success: true,
             message: message
         });
 
@@ -314,7 +315,6 @@ export const unlinkGoogleAccount = async (req, res) => {
         await user.save();
 
         res.json({
-            success: true,
             message: 'Đã hủy liên kết tài khoản Google thành công'
         });
 
@@ -337,7 +337,6 @@ export const deleteUser = async (req, res) => {
         await user.deleteOne();
 
         res.json({
-            success: true,
             message: 'Đã xóa tài khoản thành công'
         });
 
@@ -396,8 +395,8 @@ export const getUserProfile = async (req, res) => {
         }
 
         res.json({
-            success: true,
-            user: response
+            message: 'Lấy profile thành công',
+            data: response
         });
 
     } catch (error) {

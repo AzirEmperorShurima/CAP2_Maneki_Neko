@@ -55,9 +55,8 @@ export const addTestUser = async (req, res) => {
         await newUser.save();
 
         res.status(201).json({
-            success: true,
             message: 'Tạo user test thành công',
-            user: {
+            data: {
                 id: newUser._id,
                 username: newUser.username,
                 email: newUser.email,
@@ -93,9 +92,8 @@ export const addTestBaseUser = async (req, res) => {
         });
         await newUser.save();
         res.status(201).json({
-            success: true,
             message: 'Tạo user test thành công',
-            user: {
+            data: {
                 id: newUser._id,
                 email: newUser.email,
             },
@@ -115,5 +113,5 @@ export const deleteTestUser = async (req, res) => {
     if (!email) return res.status(400).json({ error: 'Email bắt buộc' });
 
     const result = await User.deleteOne({ email });
-    res.json({ success: true, deleted: result.deletedCount > 0 });
+    res.json({ message: 'Xóa user test', data: { deleted: result.deletedCount > 0 } });
 };

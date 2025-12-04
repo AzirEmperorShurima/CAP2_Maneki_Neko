@@ -22,7 +22,7 @@ export const registerNewFCMToken = async (req, res) => {
         const success = await registerFCMToken(currentUser, fcmPayload);
 
         if (success) {
-            res.json({ success: true, message: 'Đăng ký FCM token thành công' });
+            res.json({ message: 'Đăng ký FCM token thành công' });
         } else {
             res.status(400).json({ error: 'Không thể đăng ký FCM token' });
         }
@@ -48,9 +48,9 @@ export const removeFCMToken = async (req, res) => {
         );
 
         if (result.modifiedCount > 0) {
-            res.json({ success: true, message: 'Đã xóa FCM token' });
+            res.json({ message: 'Đã xóa FCM token' });
         } else {
-            res.json({ success: true, message: 'Không tìm thấy token để xóa' });
+            res.json({ message: 'Không tìm thấy token để xóa' });
         }
 
     } catch (error) {
@@ -67,8 +67,8 @@ export const getFCMTokens = async (req, res) => {
 
         if (!userDoc || !userDoc.fcmTokens || userDoc.fcmTokens.length === 0) {
             return res.json({
-                success: true,
-                tokens: []
+                message: 'Lấy danh sách FCM tokens thành công',
+                data: []
             });
         }
 
@@ -80,8 +80,8 @@ export const getFCMTokens = async (req, res) => {
         }));
 
         res.json({
-            success: true,
-            tokens
+            message: 'Lấy danh sách FCM tokens thành công',
+            data: tokens
         });
 
     } catch (error) {
@@ -112,9 +112,8 @@ export const clearAllAnotherFCMTokens = async (req, res) => {
         const result = await user.updateOne({ _id: req.userId }, { $set: { fcmTokens: keep } });
 
         res.json({
-            success: true,
-            kept: keep.length,
-            message: keep.length > 0 ? 'Đã xóa các token khác, giữ lại token hiện tại' : 'Không tìm thấy token hiện tại, đã xóa tất cả'
+            message: keep.length > 0 ? 'Đã xóa các token khác, giữ lại token hiện tại' : 'Không tìm thấy token hiện tại, đã xóa tất cả',
+            data: { kept: keep.length }
         });
 
     } catch (error) {

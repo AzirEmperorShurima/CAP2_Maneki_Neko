@@ -159,8 +159,10 @@ export const getReport = async (req, res) => {
     const insights = await geminiAnalyze(JSON.stringify(data, null, 2));
 
     res.json({
-        success: true,
-        data,
-        insights
+        message: 'Lấy báo cáo thành công',
+        data: {
+            data,
+            insights
+        }
     });
 };

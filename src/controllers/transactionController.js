@@ -138,17 +138,19 @@ export const createTransaction = async (req, res) => {
                 .populate('walletId', 'name balance scope type icon');
             return res.status(201).json({
                 message: 'Tạo giao dịch thành công',
-                transaction: populatedTransaction,
-                budgetWarnings: budgetWarnings ? {
-                    count: budgetWarnings.length,
-                    hasError: budgetWarnings.some(w => w.level === 'error'),
-                    hasCritical: budgetWarnings.some(w => w.level === 'critical'),
-                    warnings: budgetWarnings
-                } : null,
-                walletInfo: {
-                    id: wallet._id,
-                    name: wallet.name,
-                    balance: wallet.balance
+                data: {
+                    transaction: populatedTransaction,
+                    budgetWarnings: budgetWarnings ? {
+                        count: budgetWarnings.length,
+                        hasError: budgetWarnings.some(w => w.level === 'error'),
+                        hasCritical: budgetWarnings.some(w => w.level === 'critical'),
+                        warnings: budgetWarnings
+                    } : null,
+                    walletInfo: {
+                        id: wallet._id,
+                        name: wallet.name,
+                        balance: wallet.balance
+                    }
                 }
             });
         } else if (type === 'income') {
@@ -161,11 +163,13 @@ export const createTransaction = async (req, res) => {
 
             return res.status(201).json({
                 message: 'Tạo giao dịch thành công',
-                transaction: populatedTransaction,
-                walletInfo: {
-                    id: wallet._id,
-                    name: wallet.name,
-                    balance: wallet.balance
+                data: {
+                    transaction: populatedTransaction,
+                    walletInfo: {
+                        id: wallet._id,
+                        name: wallet.name,
+                        balance: wallet.balance
+                    }
                 }
             });
         }
@@ -290,7 +294,7 @@ export const updateTransaction = async (req, res) => {
 
         res.json({
             message: 'Cập nhật giao dịch thành công',
-            transaction: populatedTransaction
+            data: populatedTransaction
         });
 
     } catch (err) {
@@ -340,7 +344,9 @@ export const deleteTransaction = async (req, res) => {
 
         res.json({
             message: 'Đã xóa giao dịch thành công',
-            restoredBalance: transaction.amount
+            data: {
+                restoredBalance: transaction.amount
+            }
         });
 
     } catch (err) {
@@ -360,7 +366,7 @@ export const getTransactionById = async (req, res) => {
             return res.status(404).json({ error: 'Không tìm thấy giao dịch' });
         }
 
-        res.json({ transaction });
+        res.json({ message: 'Lấy giao dịch thành công', data: transaction });
     } catch (err) {
         console.error('Get transaction by ID error:', err);
         res.status(500).json({ error: 'Lỗi server' });
@@ -461,14 +467,16 @@ export const getTransactions = async (req, res) => {
         });
 
         res.json({
-            success: true,
-            transactions: result,
-            pagination: {
-                page,
-                limit,
-                total,
-                totalPages: Math.ceil(total / limit),
-                hasNext: page < Math.ceil(total / limit)
+            message: 'Lấy danh sách giao dịch thành công',
+            data: {
+                transactions: result,
+                pagination: {
+                    page,
+                    limit,
+                    total,
+                    totalPages: Math.ceil(total / limit),
+                    hasNext: page < Math.ceil(total / limit)
+                }
             }
         });
 
@@ -486,7 +494,7 @@ export const getTransactionChartData = async (req, res) => {
         const { month, type } = req.body;
         const chartData = await transactionService.getTransactionChartData(_user._id, month, type);
 
-        res.json({ success: true, chartData });
+        res.json({ message: 'Lấy dữ liệu biểu đồ giao dịch thành công', data: chartData });
     } catch (error) {
         console.error('Lỗi lấy chart data:', error);
         res.status(500).json({ error: 'Lỗi server' });

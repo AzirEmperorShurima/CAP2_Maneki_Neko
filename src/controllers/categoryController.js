@@ -19,7 +19,7 @@ export const createCategory = async (req, res) => {
     });
     await _category.save();
 
-    res.json({ success: true, category: _category });
+    res.json({ message: 'Tạo danh mục thành công', data: _category });
 };
 
 export const updateCategory = async (req, res) => {
@@ -61,7 +61,7 @@ export const updateCategory = async (req, res) => {
 
         const updated = await category.findByIdAndUpdate(id, update, { new: true });
 
-        return res.json({ success: true, category: updated });
+        return res.json({ message: 'Cập nhật danh mục thành công', data: updated });
     } catch (err) {
         console.error('updateCategory error:', err);
         return res.status(500).json({ error: 'Lỗi server' });
@@ -89,5 +89,5 @@ export const getCategories = async (req, res) => {
         .select('name type scope')
         .sort({ scope: 1, name: 1 });
 
-    res.json({ success: true, categories });
+    res.json({ message: 'Lấy danh mục thành công', data: categories });
 };

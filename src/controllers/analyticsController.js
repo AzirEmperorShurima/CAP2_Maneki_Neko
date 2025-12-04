@@ -30,8 +30,7 @@ class AnalyticsController {
                 const family = await Family.findById(options.familyId);
                 if (!family || !family.isMember(userId)) {
                     return res.status(403).json({
-                        success: false,
-                        message: 'Bạn không có quyền truy cập dữ liệu gia đình này'
+                        error: 'Bạn không có quyền truy cập dữ liệu gia đình này'
                     });
                 }
             }
@@ -39,15 +38,14 @@ class AnalyticsController {
             const overview = await analyticsService.getFinancialOverview(userId, options);
 
             return res.status(200).json({
-                success: true,
+                message: 'Lấy tổng quan tài chính thành công',
                 data: overview
             });
         } catch (error) {
             console.error('Error in getOverview:', error);
             return res.status(500).json({
-                success: false,
-                message: 'Lỗi khi lấy tổng quan tài chính',
-                error: error.message
+                error: 'Lỗi khi lấy tổng quan tài chính',
+                details: error.message
             });
         }
     }
@@ -79,8 +77,7 @@ class AnalyticsController {
                 const family = await Family.findById(options.familyId);
                 if (!family || !family.isMember(userId)) {
                     return res.status(403).json({
-                        success: false,
-                        message: 'Bạn không có quyền truy cập dữ liệu gia đình này'
+                        error: 'Bạn không có quyền truy cập dữ liệu gia đình này'
                     });
                 }
             }
@@ -88,15 +85,14 @@ class AnalyticsController {
             const data = await analyticsService.getExpenseByCategory(userId, options);
 
             return res.status(200).json({
-                success: true,
+                message: 'Phân tích chi tiêu theo danh mục thành công',
                 data
             });
         } catch (error) {
             console.error('Error in getExpenseByCategory:', error);
             return res.status(500).json({
-                success: false,
-                message: 'Lỗi khi phân tích chi tiêu theo danh mục',
-                error: error.message
+                error: 'Lỗi khi phân tích chi tiêu theo danh mục',
+                details: error.message
             });
         }
     }
@@ -126,8 +122,7 @@ class AnalyticsController {
                 const family = await Family.findById(options.familyId);
                 if (!family || !family.isMember(userId)) {
                     return res.status(403).json({
-                        success: false,
-                        message: 'Bạn không có quyền truy cập dữ liệu gia đình này'
+                        error: 'Bạn không có quyền truy cập dữ liệu gia đình này'
                     });
                 }
             }
@@ -135,15 +130,14 @@ class AnalyticsController {
             const data = await analyticsService.getIncomeByCategory(userId, options);
 
             return res.status(200).json({
-                success: true,
+                message: 'Phân tích thu nhập theo danh mục thành công',
                 data
             });
         } catch (error) {
             console.error('Error in getIncomeByCategory:', error);
             return res.status(500).json({
-                success: false,
-                message: 'Lỗi khi phân tích thu nhập theo danh mục',
-                error: error.message
+                error: 'Lỗi khi phân tích thu nhập theo danh mục',
+                details: error.message
             });
         }
     }
@@ -175,8 +169,7 @@ class AnalyticsController {
                 const family = await Family.findById(options.familyId);
                 if (!family || !family.isMember(userId)) {
                     return res.status(403).json({
-                        success: false,
-                        message: 'Bạn không có quyền truy cập dữ liệu gia đình này'
+                        error: 'Bạn không có quyền truy cập dữ liệu gia đình này'
                     });
                 }
             }
@@ -184,15 +177,14 @@ class AnalyticsController {
             const data = await analyticsService.getSpendingTrend(userId, options);
 
             return res.status(200).json({
-                success: true,
+                message: 'Lấy xu hướng chi tiêu thành công',
                 data
             });
         } catch (error) {
             console.error('Error in getSpendingTrend:', error);
             return res.status(500).json({
-                success: false,
-                message: 'Lỗi khi lấy xu hướng chi tiêu',
-                error: error.message
+                error: 'Lỗi khi lấy xu hướng chi tiêu',
+                details: error.message
             });
         }
     }
@@ -222,8 +214,7 @@ class AnalyticsController {
                 const family = await Family.findById(options.familyId);
                 if (!family || !family.isMember(userId)) {
                     return res.status(403).json({
-                        success: false,
-                        message: 'Bạn không có quyền truy cập dữ liệu gia đình này'
+                        error: 'Bạn không có quyền truy cập dữ liệu gia đình này'
                     });
                 }
             }
@@ -231,15 +222,14 @@ class AnalyticsController {
             const data = await analyticsService.getComparisonWithPreviousPeriod(userId, options);
 
             return res.status(200).json({
-                success: true,
+                message: 'So sánh với kỳ trước thành công',
                 data
             });
         } catch (error) {
             console.error('Error in getComparison:', error);
             return res.status(500).json({
-                success: false,
-                message: 'Lỗi khi so sánh với kỳ trước',
-                error: error.message
+                error: 'Lỗi khi so sánh với kỳ trước',
+                details: error.message
             });
         }
     }
@@ -269,8 +259,7 @@ class AnalyticsController {
                 const family = await Family.findById(options.familyId);
                 if (!family || !family.isMember(userId)) {
                     return res.status(403).json({
-                        success: false,
-                        message: 'Bạn không có quyền truy cập dữ liệu gia đình này'
+                        error: 'Bạn không có quyền truy cập dữ liệu gia đình này'
                     });
                 }
             }
@@ -278,15 +267,14 @@ class AnalyticsController {
             const data = await analyticsService.getBudgetStatus(userId, options);
 
             return res.status(200).json({
-                success: true,
+                message: 'Lấy trạng thái ngân sách thành công',
                 data
             });
         } catch (error) {
             console.error('Error in getBudgetStatus:', error);
             return res.status(500).json({
-                success: false,
-                message: 'Lỗi khi lấy trạng thái ngân sách',
-                error: error.message
+                error: 'Lỗi khi lấy trạng thái ngân sách',
+                details: error.message
             });
         }
     }
@@ -314,8 +302,7 @@ class AnalyticsController {
                 const family = await Family.findById(options.familyId);
                 if (!family || !family.isMember(userId)) {
                     return res.status(403).json({
-                        success: false,
-                        message: 'Bạn không có quyền truy cập dữ liệu gia đình này'
+                        error: 'Bạn không có quyền truy cập dữ liệu gia đình này'
                     });
                 }
             }
@@ -323,15 +310,14 @@ class AnalyticsController {
             const data = await analyticsService.getGoalsProgress(userId, options);
 
             return res.status(200).json({
-                success: true,
+                message: 'Lấy tiến độ mục tiêu thành công',
                 data
             });
         } catch (error) {
             console.error('Error in getGoalsProgress:', error);
             return res.status(500).json({
-                success: false,
-                message: 'Lỗi khi lấy tiến độ mục tiêu',
-                error: error.message
+                error: 'Lỗi khi lấy tiến độ mục tiêu',
+                details: error.message
             });
         }
     }
@@ -357,8 +343,7 @@ class AnalyticsController {
                 const family = await Family.findById(options.familyId);
                 if (!family || !family.isMember(userId)) {
                     return res.status(403).json({
-                        success: false,
-                        message: 'Bạn không có quyền truy cập dữ liệu gia đình này'
+                        error: 'Bạn không có quyền truy cập dữ liệu gia đình này'
                     });
                 }
             }
@@ -366,15 +351,14 @@ class AnalyticsController {
             const data = await analyticsService.getWalletAnalytics(userId, options);
 
             return res.status(200).json({
-                success: true,
+                message: 'Lấy phân tích ví thành công',
                 data
             });
         } catch (error) {
             console.error('Error in getWalletAnalytics:', error);
             return res.status(500).json({
-                success: false,
-                message: 'Lỗi khi phân tích ví',
-                error: error.message
+                error: 'Lỗi khi phân tích ví',
+                details: error.message
             });
         }
     }
@@ -408,8 +392,7 @@ class AnalyticsController {
                 const family = await Family.findById(options.familyId);
                 if (!family || !family.isMember(userId)) {
                     return res.status(403).json({
-                        success: false,
-                        message: 'Bạn không có quyền truy cập dữ liệu gia đình này'
+                        error: 'Bạn không có quyền truy cập dữ liệu gia đình này'
                     });
                 }
             }
@@ -417,15 +400,14 @@ class AnalyticsController {
             const data = await analyticsService.getTopTransactions(userId, options);
 
             return res.status(200).json({
-                success: true,
+                message: 'Lấy top giao dịch thành công',
                 data
             });
         } catch (error) {
             console.error('Error in getTopTransactions:', error);
             return res.status(500).json({
-                success: false,
-                message: 'Lỗi khi lấy top giao dịch',
-                error: error.message
+                error: 'Lỗi khi lấy top giao dịch',
+                details: error.message
             });
         }
     }
@@ -455,8 +437,7 @@ class AnalyticsController {
                 const family = await Family.findById(options.familyId);
                 if (!family || !family.isMember(userId)) {
                     return res.status(403).json({
-                        success: false,
-                        message: 'Bạn không có quyền truy cập dữ liệu gia đình này'
+                        error: 'Bạn không có quyền truy cập dữ liệu gia đình này'
                     });
                 }
             }
@@ -464,15 +445,14 @@ class AnalyticsController {
             const data = await analyticsService.getFullReport(userId, options);
 
             return res.status(200).json({
-                success: true,
+                message: 'Lấy báo cáo tổng hợp thành công',
                 data
             });
         } catch (error) {
             console.error('Error in getFullReport:', error);
             return res.status(500).json({
-                success: false,
-                message: 'Lỗi khi lấy báo cáo tổng hợp',
-                error: error.message
+                error: 'Lỗi khi lấy báo cáo tổng hợp',
+                details: error.message
             });
         }
     }

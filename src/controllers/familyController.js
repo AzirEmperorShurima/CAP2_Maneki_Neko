@@ -66,7 +66,7 @@ export const createFamily = async (req, res) => {
 
         res.status(201).json({
             message: 'Đã tạo nhóm gia đình thành công',
-            family: populatedFamily
+            data: populatedFamily
         });
     } catch (error) {
         console.error('Lỗi tạo family:', error);
@@ -93,7 +93,7 @@ export const generateInviteLink = async (req, res) => {
 
         const inviteLink = `${process.env.APP_URL}/join?familyCode=${family.inviteCode}`;
 
-        res.json({ message: 'Link mời đã tạo', inviteLink });
+        res.json({ message: 'Link mời đã tạo', data: { inviteLink } });
     } catch (error) {
         console.error('Lỗi tạo invite link:', error);
         res.status(500).json({ error: 'Lỗi server' });
@@ -138,11 +138,12 @@ export const sendInviteEmail = async (req, res) => {
         const userExistsBool = !!userExists;
 
         res.json({
-            success: true,
             message: 'Đã gửi lời mời',
-            webJoinLink,
-            deepLink,
-            userExists: userExistsBool
+            data: {
+                webJoinLink,
+                deepLink,
+                userExists: userExistsBool
+            }
         });
 
         const adminName = admin.username || admin.email;
@@ -366,7 +367,7 @@ export const getFamilyMembers = async (req, res) => {
             return res.status(404).json({ error: 'Không tìm thấy gia đình' });
         }
 
-        res.json(family.members);
+        res.json({ message: 'Lấy danh sách thành viên gia đình thành công', data: family.members });
     } catch (error) {
         console.error('Lỗi get family members:', error);
         res.status(500).json({ error: 'Lỗi server' });
@@ -448,7 +449,7 @@ export const updateSharingSettings = async (req, res) => {
         };
 
         await family.save();
-        res.json({ success: true, sharingSettings: family.sharingSettings });
+        res.json({ message: 'Cập nhật thiết lập chia sẻ thành công', data: family.sharingSettings });
     } catch (error) {
         console.error('Lỗi update sharing settings:', error);
         res.status(500).json({ error: 'Lỗi server' });
@@ -480,7 +481,7 @@ export const addSharedResource = async (req, res) => {
 
         // SỬA: method đã có sẵn trong schema
         const added = await family.addSharedResource(resourceType, resourceId);
-        res.json({ success: true, added });
+        res.json({ message: 'Đã thêm tài nguyên chia sẻ', data: added });
     } catch (error) {
         console.error('Lỗi add shared resource:', error);
         res.status(500).json({ error: 'Lỗi server' });
@@ -511,7 +512,7 @@ export const removeSharedResource = async (req, res) => {
 
         // SỬA: gọi method từ family, không phải family.adminId
         const removed = await family.removeSharedResource(resourceType, resourceId);
-        res.json({ success: true, removed });
+        res.json({ message: 'Đã xóa tài nguyên chia sẻ', data: removed });
     } catch (error) {
         console.error('Lỗi remove shared resource:', error);
         res.status(500).json({ error: 'Lỗi server' });

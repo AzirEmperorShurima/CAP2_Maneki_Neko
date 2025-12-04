@@ -259,11 +259,13 @@ export const createBudget = async (req, res) => {
                 const populatedBudget = await Budget.findById(existingBudget._id)
                     .populate('parentBudgetId categoryId');
 
-                return res.status(200).json({
-                    message: 'Đã cập nhật ngân sách có sẵn',
-                    budget: populatedBudget,
-                    isUpdated: true
-                });
+        return res.status(200).json({
+            message: 'Đã cập nhật ngân sách có sẵn',
+            data: {
+                budget: populatedBudget,
+                isUpdated: true
+            }
+        });
             } else {
                 return res.status(409).json({
                     error: 'Ngân sách đã tồn tại trong khoảng thời gian này',
@@ -375,9 +377,11 @@ export const createBudget = async (req, res) => {
 
         res.status(201).json({
             message: 'Tạo ngân sách thành công',
-            budget: populatedBudget,
-            isUpdated: false,
-            deactivatedCount: overlappingBudgets.length
+            data: {
+                budget: populatedBudget,
+                isUpdated: false,
+                deactivatedCount: overlappingBudgets.length
+            }
         });
 
     } catch (error) {
@@ -433,14 +437,16 @@ export const getBudgets = async (req, res) => {
         ]);
 
         res.json({
-            success: true,
-            budgets,
-            pagination: {
-                page,
-                limit,
-                total,
-                totalPages: Math.ceil(total / limit),
-                hasNext: page < Math.ceil(total / limit)
+            message: 'Lấy danh sách ngân sách thành công',
+            data: {
+                budgets,
+                pagination: {
+                    page,
+                    limit,
+                    total,
+                    totalPages: Math.ceil(total / limit),
+                    hasNext: page < Math.ceil(total / limit)
+                }
             }
         });
 
@@ -471,12 +477,15 @@ export const getBudgetById = async (req, res) => {
         const totalChildSpent = childBudgets.reduce((sum, b) => sum + b.spentAmount, 0);
 
         res.json({
-            budget,
-            childBudgets,
-            summary: {
-                totalChildAmount,
-                totalChildSpent,
-                remainingForChildren: budget.amount - totalChildAmount
+            message: 'Lấy thông tin ngân sách thành công',
+            data: {
+                budget,
+                childBudgets,
+                summary: {
+                    totalChildAmount,
+                    totalChildSpent,
+                    remainingForChildren: budget.amount - totalChildAmount
+                }
             }
         });
     } catch (error) {
@@ -641,7 +650,7 @@ export const getActiveBudgetsForCurrentPeriod = async (req, res) => {
             .populate('categoryId parentBudgetId')
             .sort({ type: 1 });
 
-        res.json({ budgets });
+        res.json({ message: 'Lấy ngân sách đang hoạt động thành công', data: budgets });
     } catch (error) {
         console.error('Lỗi lấy danh sách ngân sách hiện tại:', error);
         res.status(500).json({ error: 'Lỗi server' });
@@ -670,14 +679,17 @@ export const getBudgetSummary = async (req, res) => {
         const percentUsed = budget.amount > 0 ? (budget.spentAmount / budget.amount * 100).toFixed(2) : 0;
 
         res.json({
-            budget,
-            childBudgets,
-            summary: {
-                totalChildAmount,
-                totalChildSpent,
-                remainingForChildren,
-                percentUsed: parseFloat(percentUsed),
-                isOverBudget: budget.spentAmount > budget.amount
+            message: 'Lấy tổng quan ngân sách thành công',
+            data: {
+                budget,
+                childBudgets,
+                summary: {
+                    totalChildAmount,
+                    totalChildSpent,
+                    remainingForChildren,
+                    percentUsed: parseFloat(percentUsed),
+                    isOverBudget: budget.spentAmount > budget.amount
+                }
             }
         });
     } catch (error) {

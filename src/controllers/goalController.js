@@ -38,7 +38,7 @@ export const createGoal = async (req, res) => {
 
         res.status(201).json({
             message: 'Tạo mục tiêu thành công',
-            goal: populatedGoal
+            data: populatedGoal
         });
     } catch (error) {
         console.error('Lỗi tạo mục tiêu:', error);
@@ -58,7 +58,7 @@ export const getGoals = async (req, res) => {
             .populate('associatedWallets', 'name balance')
             .sort({ createdAt: -1 });
 
-        res.json({ goals });
+        res.json({ message: 'Lấy danh sách mục tiêu thành công', data: goals });
     } catch (error) {
         console.error('Lỗi lấy danh sách mục tiêu:', error);
         res.status(500).json({ error: 'Lỗi server' });
@@ -75,7 +75,7 @@ export const getGoalById = async (req, res) => {
             return res.status(404).json({ error: 'Không tìm thấy mục tiêu' });
         }
 
-        res.json({ goal });
+        res.json({ message: 'Lấy mục tiêu thành công', data: goal });
     } catch (error) {
         console.error('Lỗi lấy mục tiêu:', error);
         res.status(500).json({ error: 'Lỗi server' });
@@ -118,7 +118,7 @@ export const updateGoal = async (req, res) => {
         const populatedGoal = await Goal.findById(goal._id)
             .populate('associatedWallets', 'name balance');
 
-        res.json({ message: 'Cập nhật mục tiêu thành công', goal: populatedGoal });
+        res.json({ message: 'Cập nhật mục tiêu thành công', data: populatedGoal });
     } catch (error) {
         console.error('Lỗi cập nhật mục tiêu:', error);
         res.status(500).json({ error: 'Lỗi server' });
@@ -148,9 +148,11 @@ export const addProgressToGoal = async (req, res) => {
 
         res.json({
             message: 'Đã cập nhật tiến độ mục tiêu',
-            currentProgress: goal.currentProgress,
-            progressPercentage: result.progressPercentage,
-            isCompleted: result.isCompleted
+            data: {
+                currentProgress: goal.currentProgress,
+                progressPercentage: result.progressPercentage,
+                isCompleted: result.isCompleted
+            }
         });
     } catch (error) {
         console.error('Lỗi thêm tiến độ mục tiêu:', error);
@@ -192,7 +194,7 @@ export const linkWalletsToGoal = async (req, res) => {
 
         res.json({
             message: 'Đã liên kết các ví với mục tiêu',
-            goal: populatedGoal
+            data: populatedGoal
         });
     } catch (error) {
         console.error('Lỗi liên kết ví với mục tiêu:', error);
@@ -228,7 +230,7 @@ export const unlinkWalletFromGoal = async (req, res) => {
 
         res.json({
             message: 'Đã hủy liên kết ví với mục tiêu',
-            goal: populatedGoal
+            data: populatedGoal
         });
     } catch (error) {
         console.error('Lỗi hủy liên kết ví:', error);
