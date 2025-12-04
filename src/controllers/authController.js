@@ -365,10 +365,10 @@ export const getUserProfile = async (req, res) => {
         }
 
         const response = {
-            _id: user._id,
+            id: user._id,
             email: user.email,
             username: user.username,
-            avatar: user.avatar || null,
+            avatar: user.avatar || "null",
             authProvider: user.authProvider,
             hasPassword: user.hasPassword(),
             hasGoogleLinked: user.isGoogleLinked(),
@@ -379,12 +379,12 @@ export const getUserProfile = async (req, res) => {
         if (user.familyId) {
             const family = user.familyId;
             response.family = {
-                _id: family._id,
+                id: family._id,
                 name: family.name,
                 isAdmin: family.adminId.toString() === req.userId.toString(),
                 memberCount: family.members.length,
                 members: family.members.map(member => ({
-                    _id: member._id,
+                    id: member._id,
                     username: member.username,
                     email: member.email,
                     avatar: member.avatar || "null",
