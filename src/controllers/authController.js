@@ -47,9 +47,12 @@ export const register = async (req, res) => {
 
         res.status(201).json({
             message: 'Đăng ký thành công',
-            userId: newUser._id,
-            accessToken,
-            expiresAt: 7 * 24 * 60 * 60
+            data: {
+                userId: newUser._id,
+                accessToken,
+                expiresAt: 7 * 24 * 60 * 60
+            }
+
         });
     } catch (err) {
         console.error('Register error:', err);
@@ -120,10 +123,11 @@ export const login = async (req, res) => {
         // Response
         res.json({
             message: 'Đăng nhập thành công',
-            userId: user._id,
-            accessToken,
-            // refreshToken: refreshTokenValue,
-            expiresAt: 7 * 24 * 60 * 60 // 7 days in seconds
+            data: {
+                userId: newUser._id,
+                accessToken,
+                expiresAt: 7 * 24 * 60 * 60
+            }
         });
 
         // Register FCM token (async)
