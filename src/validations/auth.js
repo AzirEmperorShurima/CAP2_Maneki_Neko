@@ -9,47 +9,47 @@ const passwordComplexity = Joi.string()
   });
 
 export const registerSchema = Joi.object({
-  accountName: Joi.string()
-    .alphanum()
-    .min(3)
-    .max(50)
+  email: Joi.string()
+    .email({ tlds: { allow: false } })
     .required()
     .messages({
-      "string.alphanum": "Tên đăng nhập chỉ được chứa chữ và số",
-      "string.min": "Tên đăng nhập phải có ít nhất 3 ký tự",
-      "string.max": "Tên đăng nhập không được vượt quá 50 ký tự",
-      "any.required": "Tên đăng nhập là bắt buộc"
+      "string.email": "Email không hợp lệ",
+      "any.required": "Email là bắt buộc"
     }),
   password: passwordComplexity.required(),
-  // email: Joi.string().email({ tlds: { allow: false } }).optional(),
-  // username: Joi.string().optional(),
+  username: Joi.string()
+    .min(2)
+    .max(50)
+    .optional()
+    .messages({
+      "string.min": "Tên hiển thị phải có ít nhất 2 ký tự",
+      "string.max": "Tên hiển thị không được vượt quá 50 ký tự"
+    }),
 });
 
 export const loginSchema = Joi.object({
-  accountName: Joi.string()
-    .alphanum()
-    .min(3)
-    .max(50)
+  email: Joi.string()
+    .email({ tlds: { allow: false } })
     .required()
     .messages({
-      "string.alphanum": "Tên đăng nhập chỉ được chứa chữ và số",
-      "string.min": "Tên đăng nhập phải có ít nhất 3 ký tự",
-      "string.max": "Tên đăng nhập không được vượt quá 50 ký tự",
-      "any.required": "Tên đăng nhập là bắt buộc"
+      "string.email": "Email không hợp lệ",
+      "any.required": "Email là bắt buộc"
     }),
   password: Joi.string()
     .required()
     .messages({
       "any.required": "Mật khẩu là bắt buộc"
     }),
-  // deviceId: Joi.string().required().messages({ "any.required": "deviceId là bắt buộc" }),
-  // fcmToken: Joi.string().optional(),
-  // platform: Joi.string().valid('android', 'ios').optional(),
+  deviceId: Joi.string().optional(),
+  fcmToken: Joi.string().optional(),
+  platform: Joi.string().valid('android', 'ios').optional(),
 });
 
 export const verifyGoogleSchema = Joi.object({
-  idToken: Joi.string().required().messages({ "any.required": "idToken là bắt buộc" }),
-  deviceId: Joi.string().required().messages({ "any.required": "deviceId là bắt buộc" }),
+  idToken: Joi.string().required().messages({
+    "any.required": "idToken là bắt buộc"
+  }),
+  deviceId: Joi.string().optional(),
   fcmToken: Joi.string().optional(),
   platform: Joi.string().valid('android', 'ios').optional(),
 });

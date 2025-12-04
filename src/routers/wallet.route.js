@@ -4,7 +4,8 @@ import {
     createWallet, getWallets,
     getWalletById, updateWallet,
     deleteWallet, manageWalletAccess,
-    getTransferHistory, transferBetweenWallets
+    getTransferHistory, transferBetweenWallets,
+    payDebt
 } from '../controllers/walletController.js';
 
 const walletRouter = Router();
@@ -18,6 +19,7 @@ walletRouter.delete('/:id', deleteWallet);
 // Chuyển tiền
 walletRouter.post('/transfer', transferBetweenWallets);
 walletRouter.get('/transfers/history', getTransferHistory);
+walletRouter.post('/pay-debt', payDebt);
 
 // Quản lý quyền
 walletRouter.post('/:id/access', manageWalletAccess);

@@ -10,6 +10,7 @@ import goalRouter from "./goal.route.js";
 import walletRouter from "./wallet.route.js";
 import budgetRouter from "./budget.route.js";
 import fcmRouter from "./fcm.route.js";
+import categoryRouter from "./category.route.js";
 
 const apiRouter = Router()
 
@@ -26,7 +27,7 @@ apiRouter.get("/", (req, res) => {
 // ============================================
 apiRouter.use("/auth", authRouter)
 apiRouter.use("/test", testRouter)
-// Public family join endpoint
+// Semi-Protected Routes
 apiRouter.use("/family", familyRouter)
 apiRouter.use("/fcm", fcmRouter)
 // ============================================
@@ -40,5 +41,6 @@ apiRouter.use("/transaction", transactionRouter)
 apiRouter.use("/budget", budgetRouter)
 apiRouter.use("/wallet", walletRouter)
 apiRouter.use("/goal", goalRouter)
+apiRouter.use("/category", categoryRouter)
 
 export default apiRouter

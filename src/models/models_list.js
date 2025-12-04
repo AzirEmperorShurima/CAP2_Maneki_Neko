@@ -7,6 +7,7 @@ import refreshToken from "./refreshToken.js";
 import transaction from "./transaction.js";
 import user from "./user.js";
 import wallet from "./wallet.js";
+import { WalletTransfer } from "./walletTransfer.js";
 
 export const models_list = {
     user,
@@ -17,6 +18,7 @@ export const models_list = {
     family,
     goal,
     wallet,
-    refreshToken
+    refreshToken,
+    WalletTransfer
     
 }

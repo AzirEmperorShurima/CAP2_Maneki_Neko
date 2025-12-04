@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { register, login, verifyGoogleId } from "../controllers/authController.js";
+import { register, login, verifyGoogleId, deleteUser } from "../controllers/authController.js";
 
 const authRouter = Router()
 
@@ -13,6 +13,8 @@ authRouter.get("/", (req, res) => {
 authRouter.post("/register", register)
 authRouter.post("/login", login)
 authRouter.get("/login/verify/google-id", verifyGoogleId)
+
+authRouter.delete("/remove-user", deleteUser)
 
 
 export default authRouter

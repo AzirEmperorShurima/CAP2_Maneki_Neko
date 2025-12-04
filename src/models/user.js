@@ -2,47 +2,76 @@ import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
 
 const userSchema = new mongoose.Schema({
-    accountName: { type: String, required: true, unique: true }, // for login without google
-    username: { type: String, unique: true, sparse: true },
-    email: { type: String, unique: true, default: '' },
-    password: { type: String },
-    googleId: { type: String, unique: true, sparse: true },
-    avatar: { type: String },
-    familyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Family' },
-    isFamilyAdmin: { type: Boolean, default: false },
+    email: {
+        type: String,
+        required: true,
+        unique: true,
+        lowercase: true,
+        trim: true,
+        match: [/^\S+@\S+\.\S+$/, 'Email không hợp lệ']
+    },
+    username: {
+        type: String,
+        trim: true,
+        maxlength: 50
+    },
+    password: {
+        type: String,
+        // Không required vì có thể đăng ký bằng Google
+    },
+    googleId: {
+        type: String,
+        unique: true,
+        sparse: true
+    },
+    avatar: {
+        type: String
+    },
+    familyId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Family'
+    },
+    isFamilyAdmin: {
+        type: Boolean,
+        default: false
+    },
+    authProvider: {
+        type: String,
+        enum: ['local', 'google', 'both'],
+        default: 'local'
+    }, // Track authentication method
     fcmTokens: [{
-        token: {
-            type: String,
-            required: true
-        },
-        deviceId: {
-            type: String,
-            required: true
-        },
-        platform: {
-            type: String,
-            enum: ['android', 'ios'],
-            required: true
-        },
-        lastUsed: {
-            type: Date,
-            default: Date.now
-        }
+        token: { type: String, required: true },
+        deviceId: { type: String, required: true },
+        platform: { type: String, enum: ['android', 'ios'], required: true },
+        lastUsed: { type: Date, default: Date.now }
     }]
 }, { timestamps: true });
 
-// Index User Schema
-userSchema.index({ email: 1, username: 1 });
+// Indexes
+// userSchema.index({ googleId: 1 });
 userSchema.index({ familyId: 1 });
 
-// Phương thức kiểm tra xem user có mật khẩu hay không
+// Virtual for display name
+userSchema.virtual('displayName').get(function () {
+    return this.username || this.email.split('@')[0];
+});
+
+// Methods
 userSchema.methods.hasPassword = function () {
     return this.password && this.password.length > 0;
 };
 
-// Phương thức kiểm tra xem user có được liên kết với Google hay không
 userSchema.methods.isGoogleLinked = function () {
     return !!this.googleId;
+};
+
+userSchema.methods.canLoginWithPassword = function () {
+    return this.hasPassword();
+};
+
+userSchema.methods.canLoginWithGoogle = function () {
+    return this.isGoogleLinked();
 };
 
 // Static method để hash password
@@ -50,13 +79,14 @@ userSchema.statics.hashPassword = async function (password) {
     return await bcrypt.hash(password, await bcrypt.genSalt(10));
 };
 
-userSchema.methods.hasPassword = function () {
-    return this.password && this.password.length > 0;
-};
-
-// Pre-save middleware chỉ hash password nếu password được thay đổi và không rỗng
+// Pre-save middleware
 userSchema.pre('save', async function (next) {
-    // Chỉ hash password nếu password được thay đổi và không rỗng
+    // Auto-generate username nếu chưa có
+    if (!this.username && this.email) {
+        this.username = this.email.split('@')[0];
+    }
+
+    // Hash password nếu được thay đổi và không rỗng
     if (this.isModified('password') && this.password && this.password.length > 0) {
         try {
             this.password = await this.constructor.hashPassword(this.password);
@@ -64,19 +94,14 @@ userSchema.pre('save', async function (next) {
             return next(error);
         }
     }
+
     return next();
 });
-
-// Static method để so sánh password
-userSchema.statics.comparePassword = async function (password, receivedPassword) {
-    return await bcrypt.compare(password, receivedPassword);
-};
 
 // Instance method để so sánh password
 userSchema.methods.comparePassword = async function (password) {
     if (!password) throw new Error('Mật khẩu bị thiếu, không thể so sánh!');
 
-    // Kiểm tra xem user có password không
     if (!this.hasPassword()) {
         throw new Error('Tài khoản này không có mật khẩu');
     }

@@ -16,77 +16,212 @@ export const updateBudgetSpentAmounts = async (userId, transaction) => {
 
     const transDate = dayjs(transaction.date);
 
-    // Tìm tất cả budget đang hoạt động và thuộc kỳ của giao dịch
-    const budgets = await Budget.find({
-        $or: [
-            { userId, familyId: null },
-            { familyId: transaction.familyId }
-        ],
+    // Query base
+    const query = {
         isActive: true,
         periodStart: { $lte: transDate.toDate() },
         periodEnd: { $gte: transDate.toDate() }
-    });
+    };
 
-    for (const budget of budgets) {
-        // Kiểm tra xem giao dịch có thuộc budget này không
-        const shouldIncludeTransaction = !budget.categoryId ||
-            budget.categoryId.toString() === transaction.categoryId.toString();
+    // Xác định scope (personal/family)
+    if (transaction.isShared && transaction.familyId) {
+        query.familyId = transaction.familyId;
+        query.isShared = true;
+    } else {
+        query.userId = userId;
+        query.$or = [
+            { familyId: null },
+            { familyId: { $exists: false } }
+        ];
+    }
 
-        if (shouldIncludeTransaction) {
-            budget.spentAmount += transaction.amount;
-            await budget.save();
+    // Tìm tất cả budgets matching, sort by createdAt descending (newest first)
+    const allBudgets = await Budget.find(query).sort({ createdAt: -1 });
+
+    // ✅ Deduplicate: chỉ lấy budget mới nhất cho mỗi group
+    const budgetGroups = new Map();
+
+    for (const budget of allBudgets) {
+        const categoryKey = budget.categoryId?.toString() || 'null';
+        const parentKey = budget.parentBudgetId?.toString() || 'null';
+        const groupKey = `${budget.type}_${categoryKey}_${parentKey}`;
+
+        // Chỉ lấy budget đầu tiên (newest) cho mỗi group
+        if (!budgetGroups.has(groupKey)) {
+            budgetGroups.set(groupKey, budget);
         }
     }
+
+    const budgetsToUpdate = Array.from(budgetGroups.values());
+
+    console.log(`📊 Found ${allBudgets.length} budgets, deduped to ${budgetsToUpdate.length}`);
+
+    // Batch update
+    const bulkOps = [];
+
+    for (const budget of budgetsToUpdate) {
+        // So sánh categoryId an toàn
+        const transactionCategoryId = transaction.categoryId?.toString();
+        const budgetCategoryId = budget.categoryId?.toString();
+
+        const shouldInclude = !budgetCategoryId ||
+            (transactionCategoryId && budgetCategoryId === transactionCategoryId);
+
+        if (shouldInclude) {
+            // Hỗ trợ cả số dương (add) và số âm (refund/delete)
+            const newSpent = Math.max(0, budget.spentAmount + transaction.amount);
+
+            bulkOps.push({
+                updateOne: {
+                    filter: { _id: budget._id },
+                    update: { $set: { spentAmount: newSpent } }
+                }
+            });
+        }
+    }
+
+    if (bulkOps.length > 0) {
+        await Budget.bulkWrite(bulkOps);
+    }
+
+    return {
+        totalFound: allBudgets.length,
+        updated: bulkOps.length,
+        deduped: allBudgets.length - budgetsToUpdate.length
+    };
 };
+
 
 /**
  * Kiểm tra và tạo cảnh báo ngân sách cho một giao dịch
  */
 export const checkBudgetWarning = async (userId, transaction) => {
-    if (transaction.type !== 'expense') return '';
+    if (transaction.type !== 'expense') return null;
 
     const warnings = [];
     const transDate = dayjs(transaction.date);
 
-    // Tìm tất cả budget đang hoạt động và thuộc kỳ của giao dịch
-    const budgets = await Budget.find({
-        $or: [
-            { userId, familyId: null },
-            { familyId: transaction.familyId }
-        ],
+    // Query base
+    const query = {
         isActive: true,
         periodStart: { $lte: transDate.toDate() },
         periodEnd: { $gte: transDate.toDate() }
-    });
+    };
 
-    for (const budget of budgets) {
-        const shouldIncludeTransaction = !budget.categoryId ||
-            budget.categoryId.toString() === transaction.categoryId.toString();
+    // Xác định scope
+    if (transaction.isShared && transaction.familyId) {
+        query.familyId = transaction.familyId;
+        query.isShared = true;
+    } else {
+        query.userId = userId;
+        query.$or = [
+            { familyId: null },
+            { familyId: { $exists: false } }
+        ];
+    }
 
-        if (shouldIncludeTransaction) {
-            const projectedSpent = budget.spentAmount + transaction.amount;
-            const percentUsed = budget.amount > 0 ? (projectedSpent / budget.amount) * 100 : 0;
+    // Populate và sort by createdAt descending
+    const allBudgets = await Budget.find(query)
+        .populate('categoryId', 'name')
+        .sort({ createdAt: -1 });
 
-            const periodName = budget.type === 'daily' ? 'ngày' :
-                budget.type === 'weekly' ? 'tuần' : 'tháng';
+    // ✅ Deduplicate
+    const budgetGroups = new Map();
 
-            if (projectedSpent > budget.amount) {
-                warnings.push(`Vượt ngân sách ${periodName}: ${projectedSpent.toLocaleString()}đ / ${budget.amount.toLocaleString()}đ`);
-            } else if (percentUsed >= 90) {
-                warnings.push(`Sắp vượt ngân sách ${periodName}: ${Math.round(percentUsed)}% đã sử dụng`);
+    for (const budget of allBudgets) {
+        const categoryKey = budget.categoryId?._id?.toString() || 'null';
+        const parentKey = budget.parentBudgetId?.toString() || 'null';
+        const groupKey = `${budget.type}_${categoryKey}_${parentKey}`;
+
+        if (!budgetGroups.has(groupKey)) {
+            budgetGroups.set(groupKey, budget);
+        }
+    }
+
+    const budgetsToCheck = Array.from(budgetGroups.values());
+
+    console.log(`⚠️ Checking warnings for ${budgetsToCheck.length} budgets (deduped from ${allBudgets.length})`);
+
+    for (const budget of budgetsToCheck) {
+        // So sánh categoryId an toàn
+        const transactionCategoryId = transaction.categoryId?.toString();
+        const budgetCategoryId = budget.categoryId?._id?.toString();
+
+        const shouldInclude = !budgetCategoryId ||
+            (transactionCategoryId && budgetCategoryId === transactionCategoryId);
+
+        if (shouldInclude) {
+            const currentSpent = budget.spentAmount;
+            const budgetAmount = budget.amount;
+            const remaining = budgetAmount - currentSpent;
+            const percentUsed = budgetAmount > 0 ?
+                (currentSpent / budgetAmount) * 100 : 0;
+
+            const categoryName = budget.categoryId?.name || 'Tổng chi tiêu';
+            const periodName = {
+                'daily': 'ngày',
+                'weekly': 'tuần',
+                'monthly': 'tháng'
+            }[budget.type] || budget.type;
+
+            const warningBase = {
+                budgetId: budget._id,
+                budgetType: budget.type,
+                category: categoryName,
+                spent: currentSpent,
+                total: budgetAmount,
+                remaining,
+                percentUsed: Math.round(percentUsed)
+            };
+
+            // Phân loại warning
+            if (currentSpent > budgetAmount) {
+                warnings.push({
+                    ...warningBase,
+                    level: 'error',
+                    type: 'over_budget',
+                    message: `🚨 Vượt ngân sách ${categoryName} (${periodName}): ${currentSpent.toLocaleString()}đ / ${budgetAmount.toLocaleString()}đ`,
+                    overage: currentSpent - budgetAmount
+                });
+            } else if (percentUsed >= 95) {
+                warnings.push({
+                    ...warningBase,
+                    level: 'critical',
+                    type: 'near_limit',
+                    message: `⚠️ Gần vượt ngân sách ${categoryName} (${periodName}): ${Math.round(percentUsed)}% (còn ${remaining.toLocaleString()}đ)`
+                });
             } else if (percentUsed >= 80) {
-                warnings.push(`Đã sử dụng ${Math.round(percentUsed)}% ngân sách ${periodName}`);
+                warnings.push({
+                    ...warningBase,
+                    level: 'warning',
+                    type: 'high_usage',
+                    message: `⚡ Đã dùng ${Math.round(percentUsed)}% ngân sách ${categoryName} (${periodName})`
+                });
+            } else if (percentUsed >= 50) {
+                warnings.push({
+                    ...warningBase,
+                    level: 'info',
+                    type: 'half_used',
+                    message: `💡 Đã dùng ${Math.round(percentUsed)}% ngân sách ${categoryName} (${periodName})`
+                });
             }
 
-            // Cảnh báo nếu giao dịch chiếm tỷ lệ lớn trong ngân sách
-            if (transaction.amount >= budget.amount * 0.6) {
-                warnings.push(`Chi lớn: ${transaction.amount.toLocaleString()}đ chiếm ${(transaction.amount / budget.amount * 100).toFixed(0)}% ngân sách ${periodName}`);
+            // Cảnh báo giao dịch lớn
+            if (transaction.amount >= budgetAmount * 0.5) {
+                warnings.push({
+                    ...warningBase,
+                    level: 'warning',
+                    type: 'large_transaction',
+                    message: `💰 Chi lớn: ${transaction.amount.toLocaleString()}đ chiếm ${Math.round(transaction.amount / budgetAmount * 100)}% ngân sách ${periodName}`,
+                    transactionPercent: Math.round(transaction.amount / budgetAmount * 100)
+                });
             }
         }
     }
 
-    return warnings.length > 0 ? warnings.join('\n') : '';
+    return warnings.length > 0 ? warnings : null;
 };
+
 
 /**
  * Tìm budget hiệu quả cho một ngày cụ thể và danh mục

@@ -1,5 +1,5 @@
-import category from "../models/category";
-import user from "../models/user";
+import category from "../models/category.js";
+import user from "../models/user.js";
 import { validateCreateCategory, validateUpdateCategory, validateGetCategoriesQuery } from "../validations/category.js";
 
 export const createCategory = async (req, res) => {

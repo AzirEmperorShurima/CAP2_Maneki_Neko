@@ -23,7 +23,7 @@ const walletTransferSchema = new mongoose.Schema({
     },
     type: {
         type: String,
-        enum: ['personal_to_personal', 'family_to_personal', 'personal_to_family'],
+        enum: ['personal_to_personal', 'family_to_personal', 'personal_to_family', 'system_auto_transfer'],
         required: true
     },
     status: {
@@ -36,18 +36,21 @@ const walletTransferSchema = new mongoose.Schema({
         trim: true,
         maxlength: [500, 'Ghi chú không được vượt quá 500 ký tự']
     },
+    isSystemTransfer: {
+        type: Boolean,
+        default: false
+    }, // Transfer tự động bởi hệ thống
     metadata: {
         fromWalletName: String,
         toWalletName: String,
         fromWalletBalance: Number,
-        toWalletBalance: Number
+        toWalletBalance: Number,
+        reason: String // 'wallet_deletion', 'auto_receive', 'debt_record'
     }
 }, { timestamps: true });
 
-// Indexes
 walletTransferSchema.index({ fromWalletId: 1, createdAt: -1 });
 walletTransferSchema.index({ toWalletId: 1, createdAt: -1 });
 walletTransferSchema.index({ initiatedBy: 1, createdAt: -1 });
-walletTransferSchema.index({ status: 1, createdAt: -1 });
 
 export const WalletTransfer = mongoose.model("WalletTransfer", walletTransferSchema);

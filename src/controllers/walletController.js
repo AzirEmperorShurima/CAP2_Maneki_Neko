@@ -1,33 +1,50 @@
 import Wallet from '../models/wallet.js';
 import { WalletTransfer } from '../models/walletTransfer.js';
 import Family from '../models/family.js';
-import User from '../models/user.js';
 import mongoose from 'mongoose';
+import {
+  validateCreateWallet,
+  validateGetWalletsQuery,
+  validateIdParam,
+  validateUpdateWallet,
+  validateTransferBetweenWallets,
+  validateManageWalletAccess,
+  validateGetTransferHistoryQuery,
+  validatePayDebt
+} from '../validations/wallet.js';
 
 // ===== TẠO VÍ =====
 export const createWallet = async (req, res) => {
   try {
+    const { error, value } = validateCreateWallet(req.body);
+    if (error) {
+      return res.status(400).json({
+        error: 'Invalid payload',
+        details: error.details.map(d => ({ field: d.path.join('.'), message: d.message }))
+      });
+    }
     const {
       name,
       type,
-      initialBalance,
+      balance,
       description,
       details,
+      icon,
       isShared,
       familyId
-    } = req.body;
+    } = value;
 
     if (!name) {
       return res.status(400).json({ error: 'Tên ví là bắt buộc' });
     }
 
-    // Kiểm tra nếu tạo ví gia đình
     if (isShared) {
       if (!familyId) {
-        return res.status(400).json({ error: 'Cần chỉ định familyId khi tạo ví gia đình' });
+        return res.status(400).json({
+          error: 'Cần chỉ định familyId khi tạo ví gia đình'
+        });
       }
 
-      // Kiểm tra user có phải admin của family không
       const family = await Family.findOne({
         _id: familyId,
         adminId: req.userId
@@ -41,23 +58,24 @@ export const createWallet = async (req, res) => {
 
       // Tạo ví gia đình
       const wallet = new Wallet({
-        userId: req.userId, // Owner là admin
+        userId: req.userId,
         familyId,
         name: name.trim(),
-        type: type?.trim() || 'family_wallet',
+        scope: 'family',
+        type: type?.trim() || '',
         balance: initialBalance || 0,
         description: description?.trim() || '',
         details: details || {},
+        icon: icon || '👨‍👩‍👧‍👦',
         isShared: true,
+        canDelete: true,
         accessControl: {
-          canView: family.members, // Tất cả members có thể xem
-          canTransact: [req.userId] // Mặc định chỉ admin giao dịch được
+          canView: family.members,
+          canTransact: [req.userId]
         }
       });
 
       await wallet.save();
-
-      // Thêm vào sharedResources của family
       await family.addSharedResource('wallets', wallet._id);
 
       const populatedWallet = await Wallet.findById(wallet._id)
@@ -74,11 +92,14 @@ export const createWallet = async (req, res) => {
       const wallet = new Wallet({
         userId: req.userId,
         name: name.trim(),
-        type: type?.trim() || 'personal',
-        balance: initialBalance || 0,
+        scope: 'personal',
+        type: type?.trim() || '',
+        balance: balance || 0,
         description: description?.trim() || '',
         details: details || {},
-        isShared: false
+        icon: icon || '💰',
+        isShared: false,
+        canDelete: true
       });
 
       await wallet.save();
@@ -97,46 +118,88 @@ export const createWallet = async (req, res) => {
 // ===== LẤY DANH SÁCH VÍ =====
 export const getWallets = async (req, res) => {
   try {
-    const { isActive, isShared, familyId } = req.query;
+    const { error, value } = validateGetWalletsQuery(req.query);
+    if (error) {
+      return res.status(400).json({ error: 'Invalid query', details: error.details.map(d => ({ field: d.path.join('.'), message: d.message })) });
+    }
+    const { isActive, isShared, scope, type, includeSystem = 'true' } = value;
 
-    // Lấy tất cả ví của user (cá nhân + gia đình)
     const filter = {
       $or: [
-        { userId: req.userId }, // Ví của user
-        { 'accessControl.canView': req.userId } // Ví gia đình user có quyền xem
+        { userId: req.userId },
+        { 'accessControl.canView': req.userId }
       ]
     };
 
     if (isActive !== undefined) filter.isActive = isActive === 'true';
     if (isShared !== undefined) filter.isShared = isShared === 'true';
-    if (familyId) filter.familyId = familyId;
+    if (scope) filter.scope = scope;
+    if (type) filter.type = { $regex: type, $options: 'i' }; // Case-insensitive search
+    if (includeSystem === 'false') filter.isSystemWallet = false;
 
     const wallets = await Wallet.find(filter)
       .populate('familyId', 'name')
       .populate('userId', 'username email')
-      .sort({ isShared: 1, isDefault: -1, createdAt: -1 })
+      .sort({ isSystemWallet: 1, isDefault: -1, createdAt: -1 })
       .lean();
 
-    // Thêm thông tin quyền truy cập
-    const walletsWithPermissions = wallets.map(wallet => ({
-      ...wallet,
-      permissions: {
-        canView: wallet.userId.equals(req.userId) ||
-          wallet.accessControl?.canView?.some(id => id.equals(req.userId)),
-        canTransact: wallet.userId.equals(req.userId) ||
-          wallet.accessControl?.canTransact?.some(id => id.equals(req.userId)),
-        isOwner: wallet.userId.equals(req.userId)
+    const walletsWithPermissions = wallets.map(wallet => {
+      const ownerId = wallet?.userId && typeof wallet.userId === 'object' && wallet.userId._id ? wallet.userId._id : wallet.userId;
+      const isOwner = String(ownerId) === String(req.userId);
+      const canTransact = isOwner || (wallet.accessControl?.canTransact?.some(id => {
+        const memberId = id && typeof id === 'object' && id._id ? id._id : id;
+        return String(memberId) === String(req.userId);
+      }) ?? false);
+
+      return {
+        ...wallet,
+        permissions: {
+          canView: true,
+          canTransact,
+          canDelete: isOwner && wallet.canDelete,
+          isOwner
+        }
+      };
+    });
+
+    // Phân loại ví
+    const categorized = {
+      personal: walletsWithPermissions.filter(w => w.scope === 'personal'),
+      family: walletsWithPermissions.filter(w => w.scope === 'family'),
+      system: {
+        receive: walletsWithPermissions.find(w => w.scope === 'default_receive'),
+        savings: walletsWithPermissions.find(w => w.scope === 'default_savings'),
+        debt: walletsWithPermissions.find(w => w.scope === 'default_debt')
       }
-    }));
+    };
+
+    // Thống kê theo mục đích (type)
+    const typeStats = {};
+    walletsWithPermissions
+      .filter(w => w.type && !w.isSystemWallet)
+      .forEach(w => {
+        if (!typeStats[w.type]) {
+          typeStats[w.type] = {
+            count: 0,
+            totalBalance: 0
+          };
+        }
+        typeStats[w.type].count++;
+        typeStats[w.type].totalBalance += w.balance;
+      });
 
     res.json({
       wallets: walletsWithPermissions,
+      categorized,
       summary: {
         total: walletsWithPermissions.length,
-        personal: walletsWithPermissions.filter(w => !w.isShared).length,
-        family: walletsWithPermissions.filter(w => w.isShared).length,
-        totalBalance: walletsWithPermissions.reduce((sum, w) => sum + w.balance, 0)
-      }
+        personal: categorized.personal.length,
+        family: categorized.family.length,
+        totalBalance: walletsWithPermissions.reduce((sum, w) => sum + w.balance, 0),
+        totalDebt: categorized.system.debt ?
+          Math.abs(Math.min(0, categorized.system.debt.balance)) : 0
+      },
+      typeStats // Thống kê theo mục đích
     });
   } catch (error) {
     console.error('Lỗi lấy danh sách ví:', error);
@@ -147,7 +210,11 @@ export const getWallets = async (req, res) => {
 // ===== LẤY CHI TIẾT VÍ =====
 export const getWalletById = async (req, res) => {
   try {
-    const { id } = req.params;
+    const { error, value } = validateIdParam(req.params);
+    if (error) {
+      return res.status(400).json({ error: 'Invalid param', details: error.details.map(d => ({ field: d.path.join('.'), message: d.message })) });
+    }
+    const { id } = value;
     const wallet = await Wallet.findById(id)
       .populate('familyId', 'name members')
       .populate('userId', 'username email')
@@ -163,12 +230,14 @@ export const getWalletById = async (req, res) => {
       return res.status(403).json({ error: 'Bạn không có quyền xem ví này' });
     }
 
+    const ownerId = wallet?.userId && wallet.userId._id ? wallet.userId._id : wallet.userId;
+    const isOwner = String(ownerId) === String(req.userId);
     res.json({
       wallet,
       permissions: {
         canView: true,
         canTransact: wallet.canUserTransact(req.userId),
-        isOwner: wallet.userId.equals(req.userId)
+        isOwner
       }
     });
   } catch (error) {
@@ -180,8 +249,17 @@ export const getWalletById = async (req, res) => {
 // ===== CẬP NHẬT VÍ =====
 export const updateWallet = async (req, res) => {
   try {
-    const { id } = req.params;
-    const { name, type, description, details, isActive } = req.body;
+    const { error: idErr, value: idVal } = validateIdParam(req.params);
+    if (idErr) {
+      return res.status(400).json({ error: 'Invalid param', details: idErr.details.map(d => ({ field: d.path.join('.'), message: d.message })) });
+    }
+    const { id } = idVal;
+
+    const { error, value } = validateUpdateWallet(req.body);
+    if (error) {
+      return res.status(400).json({ error: 'Invalid payload', details: error.details.map(d => ({ field: d.path.join('.'), message: d.message })) });
+    }
+    const { name, type, description, details, icon, isActive } = value;
 
     const wallet = await Wallet.findById(id);
     if (!wallet) {
@@ -193,10 +271,18 @@ export const updateWallet = async (req, res) => {
       return res.status(403).json({ error: 'Chỉ chủ ví mới có thể cập nhật' });
     }
 
+    // Không cho phép thay đổi scope của system wallet
+    if (wallet.isSystemWallet) {
+      return res.status(400).json({
+        error: 'Không thể chỉnh sửa ví hệ thống'
+      });
+    }
+
     if (name !== undefined) wallet.name = name.trim();
     if (type !== undefined) wallet.type = type.trim();
     if (description !== undefined) wallet.description = description?.trim() || '';
     if (details !== undefined) wallet.details = details;
+    if (icon !== undefined) wallet.icon = icon;
     if (isActive !== undefined) wallet.isActive = isActive;
 
     await wallet.save();
@@ -218,27 +304,90 @@ export const updateWallet = async (req, res) => {
 
 // ===== XÓA VÍ =====
 export const deleteWallet = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
   try {
-    const { id } = req.params;
+    const { error, value } = validateIdParam(req.params);
+    if (error) {
+      await session.abortTransaction();
+      return res.status(400).json({ error: 'Invalid param', details: error.details.map(d => ({ field: d.path.join('.'), message: d.message })) });
+    }
+    const { id } = value;
 
-    const wallet = await Wallet.findById(id);
+    const wallet = await Wallet.findById(id).session(session);
     if (!wallet) {
-      return res.status(404).json({ error: 'Không tìm thấy ví' });
+      throw new Error('Không tìm thấy ví');
     }
 
-    // Chỉ owner mới có thể xóa
-    if (!wallet.userId.equals(req.userId)) {
-      return res.status(403).json({ error: 'Chỉ chủ ví mới có thể xóa' });
+    // Kiểm tra quyền xóa
+    if (wallet.isShared && wallet.familyId) {
+      const family = await Family.findById(wallet.familyId);
+      if (!family || !family.isAdmin(req.userId)) {
+        throw new Error('Chỉ admin gia đình mới có thể xóa ví gia đình');
+      }
+    } else {
+      if (!wallet.canUserDelete(req.userId)) {
+        throw new Error('Không thể xóa ví hệ thống này');
+      }
     }
 
-    // Kiểm tra số dư
-    if (wallet.balance > 0) {
-      return res.status(400).json({
-        error: 'Không thể xóa ví còn số dư. Vui lòng chuyển hết số dư trước.'
+    const balance = wallet.balance;
+    let transferRecord = null;
+
+    // XỬ LÝ SỐ DƯ KHI XÓA
+    if (balance !== 0) {
+      let targetWallet;
+      let transferNote;
+
+      if (balance > 0) {
+        // Số dư dương → Quỹ Tiết Kiệm
+        targetWallet = await Wallet.getOrCreateDefaultWallet(
+          wallet.userId,
+          'default_savings',
+          wallet.isShared ? wallet.familyId : null
+        );
+        transferNote = `Tự động chuyển ${balance.toLocaleString('vi-VN')}đ từ ví "${wallet.name}" (${wallet.type || 'không có mục đích'}) vào Quỹ Tiết Kiệm khi xóa`;
+
+        targetWallet.balance += balance;
+        await targetWallet.save({ session });
+
+      } else {
+        // Số dư âm → Ví Nợ
+        targetWallet = await Wallet.getOrCreateDefaultWallet(
+          wallet.userId,
+          'default_debt',
+          wallet.isShared ? wallet.familyId : null
+        );
+        transferNote = `Tự động ghi nợ ${Math.abs(balance).toLocaleString('vi-VN')}đ từ ví "${wallet.name}" (${wallet.type || 'không có mục đích'}) vào Ví Ghi Nợ khi xóa`;
+
+        targetWallet.balance += balance;
+        await targetWallet.save({ session });
+      }
+
+      // Lưu lịch sử transfer
+      transferRecord = new WalletTransfer({
+        fromWalletId: wallet._id,
+        toWalletId: targetWallet._id,
+        amount: Math.abs(balance),
+        initiatedBy: req.userId,
+        type: 'system_auto_transfer',
+        status: 'completed',
+        note: transferNote,
+        isSystemTransfer: true,
+        metadata: {
+          fromWalletName: wallet.name,
+          toWalletName: targetWallet.name,
+          fromWalletBalance: 0,
+          toWalletBalance: targetWallet.balance,
+          reason: 'wallet_deletion'
+        }
       });
+
+      await transferRecord.save({ session });
     }
 
-    // Nếu là ví gia đình, xóa khỏi sharedResources
+    // Xóa khỏi family sharedResources
     if (wallet.isShared && wallet.familyId) {
       const family = await Family.findById(wallet.familyId);
       if (family) {
@@ -246,11 +395,30 @@ export const deleteWallet = async (req, res) => {
       }
     }
 
-    await Wallet.deleteOne({ _id: id });
-    res.json({ message: 'Đã xóa ví thành công' });
+    await Wallet.deleteOne({ _id: id }).session(session);
+
+    await session.commitTransaction();
+
+    res.json({
+      message: 'Đã xóa ví thành công',
+      deletedWallet: {
+        name: wallet.name,
+        type: wallet.type,
+        scope: wallet.scope
+      },
+      balanceTransferred: balance !== 0 ? {
+        amount: Math.abs(balance),
+        to: balance > 0 ? 'Quỹ Tiết Kiệm' : 'Ví Ghi Nợ',
+        transfer: transferRecord
+      } : null
+    });
+
   } catch (error) {
+    await session.abortTransaction();
     console.error('Lỗi xóa ví:', error);
-    res.status(500).json({ error: 'Lỗi server' });
+    res.status(400).json({ error: error.message || 'Lỗi khi xóa ví' });
+  } finally {
+    session.endSession();
   }
 };
 
@@ -260,70 +428,91 @@ export const transferBetweenWallets = async (req, res) => {
   session.startTransaction();
 
   try {
-    const { fromWalletId, toWalletId, amount, note } = req.body;
-
-    // Validation
-    if (!fromWalletId || !toWalletId) {
-      throw new Error('Cần chỉ định ví nguồn và ví đích');
+    const { error, value } = validateTransferBetweenWallets(req.body);
+    if (error) {
+      await session.abortTransaction();
+      return res.status(400).json({ error: 'Invalid payload', details: error.details.map(d => ({ field: d.path.join('.'), message: d.message })) });
     }
+    const { fromWalletId, toWalletId, toUserId, amount, note } = value;
 
     if (!amount || amount <= 0) {
       throw new Error('Số tiền phải lớn hơn 0');
     }
 
-    if (fromWalletId === toWalletId) {
-      throw new Error('Không thể chuyển tiền trong cùng một ví');
+    // Lấy ví nguồn
+    const fromWallet = await Wallet.findById(fromWalletId).session(session);
+    if (!fromWallet) {
+      throw new Error('Không tìm thấy ví nguồn');
     }
 
-    // Lấy thông tin 2 ví
-    const [fromWallet, toWallet] = await Promise.all([
-      Wallet.findById(fromWalletId).session(session),
-      Wallet.findById(toWalletId).session(session)
-    ]);
-
-    if (!fromWallet || !toWallet) {
-      throw new Error('Không tìm thấy ví');
-    }
-
-    // Kiểm tra quyền giao dịch ví nguồn
+    // Kiểm tra quyền giao dịch
     if (!fromWallet.canUserTransact(req.userId)) {
       throw new Error('Bạn không có quyền chuyển tiền từ ví này');
     }
 
-    // Kiểm tra số dư
-    if (fromWallet.balance < amount) {
-      throw new Error('Số dư ví nguồn không đủ');
-    }
-
-    // Xác định loại chuyển tiền
+    let toWallet;
     let transferType;
-    if (!fromWallet.isShared && !toWallet.isShared) {
-      // Cả 2 đều là ví cá nhân
-      if (!fromWallet.userId.equals(req.userId) || !toWallet.userId.equals(req.userId)) {
-        throw new Error('Chỉ có thể chuyển tiền giữa các ví cá nhân của chính mình');
+
+    // XỬ LÝ VÍ ĐÍCH
+    if (toWalletId) {
+      // Chỉ định ví đích cụ thể
+      toWallet = await Wallet.findById(toWalletId).session(session);
+      if (!toWallet) {
+        throw new Error('Không tìm thấy ví đích');
       }
-      transferType = 'personal_to_personal';
-    } else if (fromWallet.isShared && !toWallet.isShared) {
-      // Từ ví gia đình sang ví cá nhân
-      // Kiểm tra admin của family
+
+      // Xác định loại transfer
+      if (!fromWallet.isShared && !toWallet.isShared) {
+        if (!fromWallet.userId.equals(req.userId) || !toWallet.userId.equals(req.userId)) {
+          throw new Error('Chỉ có thể chuyển tiền giữa các ví cá nhân của chính mình');
+        }
+        transferType = 'personal_to_personal';
+      } else if (fromWallet.isShared && !toWallet.isShared) {
+        const family = await Family.findById(fromWallet.familyId);
+        if (!family || !family.isAdmin(req.userId)) {
+          throw new Error('Chỉ admin gia đình mới có thể chuyển tiền từ ví gia đình');
+        }
+        if (!family.isMember(toWallet.userId)) {
+          throw new Error('Ví đích phải thuộc về thành viên của gia đình');
+        }
+        transferType = 'family_to_personal';
+      } else if (!fromWallet.isShared && toWallet.isShared) {
+        if (!fromWallet.userId.equals(req.userId)) {
+          throw new Error('Chỉ có thể chuyển từ ví cá nhân của chính mình');
+        }
+        transferType = 'personal_to_family';
+      } else {
+        throw new Error('Không hỗ trợ chuyển tiền giữa 2 ví gia đình');
+      }
+
+    } else if (toUserId) {
+      // Chuyển cho user (tự động tạo ví nhận mặc định nếu cần)
+      // Chỉ cho phép family → member
+      if (!fromWallet.isShared || !fromWallet.familyId) {
+        throw new Error('Chỉ có thể chuyển từ ví gia đình khi dùng toUserId');
+      }
+
       const family = await Family.findById(fromWallet.familyId);
       if (!family || !family.isAdmin(req.userId)) {
-        throw new Error('Chỉ admin gia đình mới có thể chuyển tiền từ ví gia đình sang ví cá nhân');
+        throw new Error('Chỉ admin gia đình mới có thể chuyển tiền cho thành viên');
       }
 
-      // Kiểm tra ví đích có thuộc member của family không
-      if (!family.isMember(toWallet.userId)) {
-        throw new Error('Ví đích phải thuộc về thành viên của gia đình');
+      if (!family.isMember(toUserId)) {
+        throw new Error('User phải là thành viên của gia đình');
       }
+
+      // Tạo hoặc lấy ví nhận mặc định
+      toWallet = await Wallet.getOrCreateDefaultWallet(toUserId, 'default_receive');
       transferType = 'family_to_personal';
-    } else if (!fromWallet.isShared && toWallet.isShared) {
-      // Từ ví cá nhân sang ví gia đình
-      if (!fromWallet.userId.equals(req.userId)) {
-        throw new Error('Chỉ có thể chuyển từ ví cá nhân của chính mình');
-      }
-      transferType = 'personal_to_family';
+
     } else {
-      throw new Error('Không hỗ trợ chuyển tiền giữa 2 ví gia đình');
+      throw new Error('Cần chỉ định toWalletId hoặc toUserId');
+    }
+
+    // Kiểm tra số dư (CHO PHÉP ÂM cho ví thường)
+    if (fromWallet.balance < amount) {
+      // Nếu số dư không đủ, ghi nợ vào ví nguồn
+      console.log(`⚠️ Wallet ${fromWallet.name} going negative: ${fromWallet.balance} - ${amount}`);
     }
 
     // Thực hiện chuyển tiền
@@ -335,20 +524,22 @@ export const transferBetweenWallets = async (req, res) => {
       toWallet.save({ session })
     ]);
 
-    // Lưu lịch sử giao dịch
+    // Lưu lịch sử
     const transfer = new WalletTransfer({
-      fromWalletId,
-      toWalletId,
+      fromWalletId: fromWallet._id,
+      toWalletId: toWallet._id,
       amount,
       initiatedBy: req.userId,
       type: transferType,
       status: 'completed',
-      note: note || '',
+      note: note || (toUserId && !toWalletId ? 'Chuyển tiền từ gia đình (tự động tạo ví nhận)' : ''),
+      isSystemTransfer: !!(toUserId && !toWalletId),
       metadata: {
         fromWalletName: fromWallet.name,
         toWalletName: toWallet.name,
         fromWalletBalance: fromWallet.balance,
-        toWalletBalance: toWallet.balance
+        toWalletBalance: toWallet.balance,
+        reason: toUserId && !toWalletId ? 'auto_receive' : 'user_transfer'
       }
     });
 
@@ -357,21 +548,21 @@ export const transferBetweenWallets = async (req, res) => {
     await session.commitTransaction();
 
     const populatedTransfer = await WalletTransfer.findById(transfer._id)
-      .populate('fromWalletId', 'name balance')
-      .populate('toWalletId', 'name balance')
+      .populate('fromWalletId', 'name balance type')
+      .populate('toWalletId', 'name balance type')
       .populate('initiatedBy', 'username email');
 
     res.json({
       message: 'Chuyển tiền thành công',
-      transfer: populatedTransfer
+      transfer: populatedTransfer,
+      warning: fromWallet.balance < 0 ?
+        'Ví nguồn đã vượt quá số dư và chuyển sang trạng thái âm' : null
     });
 
   } catch (error) {
     await session.abortTransaction();
     console.error('Lỗi chuyển tiền:', error);
-    res.status(400).json({
-      error: error.message || 'Lỗi khi chuyển tiền'
-    });
+    res.status(400).json({ error: error.message || 'Lỗi khi chuyển tiền' });
   } finally {
     session.endSession();
   }
@@ -380,7 +571,11 @@ export const transferBetweenWallets = async (req, res) => {
 // ===== LỊCH SỬ CHUYỂN TIỀN =====
 export const getTransferHistory = async (req, res) => {
   try {
-    const { walletId, type, limit = 50, page = 1 } = req.query;
+    const { error, value } = validateGetTransferHistoryQuery(req.query);
+    if (error) {
+      return res.status(400).json({ error: 'Invalid query', details: error.details.map(d => ({ field: d.path.join('.'), message: d.message })) });
+    }
+    const { walletId, type, limit = 50, page = 1 } = value;
     const skip = (page - 1) * limit;
 
     const filter = {
@@ -435,8 +630,17 @@ export const getTransferHistory = async (req, res) => {
 // ===== QUẢN LÝ QUYỀN TRUY CẬP VÍ GIA ĐÌNH =====
 export const manageWalletAccess = async (req, res) => {
   try {
-    const { id } = req.params;
-    const { action, userId: targetUserId, accessType } = req.body;
+    const { error: pErr, value: pVal } = validateIdParam(req.params);
+    if (pErr) {
+      return res.status(400).json({ error: 'Invalid param', details: pErr.details.map(d => ({ field: d.path.join('.'), message: d.message })) });
+    }
+    const { id } = pVal;
+
+    const { error, value } = validateManageWalletAccess(req.body);
+    if (error) {
+      return res.status(400).json({ error: 'Invalid payload', details: error.details.map(d => ({ field: d.path.join('.'), message: d.message })) });
+    }
+    const { action, userId: targetUserId, accessType } = value;
     // action: 'grant' | 'revoke'
     // accessType: 'view' | 'transact'
 
@@ -488,5 +692,83 @@ export const manageWalletAccess = async (req, res) => {
   } catch (error) {
     console.error('Lỗi quản lý quyền truy cập:', error);
     res.status(500).json({ error: 'Lỗi server' });
+  }
+};
+
+export const payDebt = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { error, value } = validatePayDebt(req.body);
+    if (error) {
+      await session.abortTransaction();
+      return res.status(400).json({ error: 'Invalid payload', details: error.details.map(d => ({ field: d.path.join('.'), message: d.message })) });
+    }
+    const { fromWalletId, amount } = value;
+
+    if (!amount || amount <= 0) {
+      throw new Error('Số tiền phải lớn hơn 0');
+    }
+
+    const fromWallet = await Wallet.findById(fromWalletId).session(session);
+    if (!fromWallet || !fromWallet.userId.equals(req.userId)) {
+      throw new Error('Không tìm thấy ví hoặc không có quyền');
+    }
+
+    const debtWallet = await Wallet.getOrCreateDefaultWallet(req.userId, 'default_debt');
+
+    if (debtWallet.balance >= 0) {
+      throw new Error('Không có nợ cần thanh toán');
+    }
+
+    const debtAmount = Math.abs(debtWallet.balance);
+    const payAmount = Math.min(amount, debtAmount);
+
+    if (fromWallet.balance < payAmount) {
+      throw new Error('Số dư không đủ để thanh toán nợ');
+    }
+
+    fromWallet.balance -= payAmount;
+    debtWallet.balance += payAmount; // Tăng lên (gần về 0)
+
+    await Promise.all([
+      fromWallet.save({ session }),
+      debtWallet.save({ session })
+    ]);
+
+    const transfer = new WalletTransfer({
+      fromWalletId: fromWallet._id,
+      toWalletId: debtWallet._id,
+      amount: payAmount,
+      initiatedBy: req.userId,
+      type: 'system_auto_transfer',
+      status: 'completed',
+      note: 'Thanh toán nợ',
+      isSystemTransfer: true,
+      metadata: {
+        fromWalletName: fromWallet.name,
+        toWalletName: debtWallet.name,
+        fromWalletBalance: fromWallet.balance,
+        toWalletBalance: debtWallet.balance,
+        reason: 'debt_payment'
+      }
+    });
+
+    await transfer.save({ session });
+    await session.commitTransaction();
+
+    res.json({
+      message: 'Thanh toán nợ thành công',
+      paid: payAmount,
+      remaining: Math.abs(Math.min(0, debtWallet.balance))
+    });
+
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('Lỗi thanh toán nợ:', error);
+    res.status(400).json({ error: error.message });
+  } finally {
+    session.endSession();
   }
 };

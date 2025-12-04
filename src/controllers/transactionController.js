@@ -5,7 +5,7 @@ import { validateCreateTransaction } from "../validations/transaction.js";
 
 import * as transactionService from '../services/transactions/analytics/transactionAlalytics.js';
 import { checkBudgetWarning, updateBudgetSpentAmounts } from "../utils/budget.js";
-import { getOrCreateDefaultWallet } from "../utils/wallet.js";
+import { checkWalletBalance, getOrCreateDefaultWallet, getUserDefaultWallet } from "../utils/wallet.js";
 
 // for self learning AI module in future
 // export const correctTransaction = async (req, res) => {
@@ -42,66 +42,137 @@ export const createTransaction = async (req, res) => {
         if (error) {
             return res.status(400).json({
                 error: 'Invalid payload',
-                details: error.details.map(d => ({ field: d.path.join('.'), message: d.message }))
+                details: error.details.map(d => ({
+                    field: d.path.join('.'),
+                    message: d.message
+                }))
             });
         }
 
         const { amount, type, date, description, isShared, categoryId, walletId } = value;
+
+        // Tìm hoặc tạo wallet
         let wallet = null;
+        let walletCreated = false;
+
         if (walletId) {
-            wallet = await Wallet.findOne({ _id: walletId, userId: req.userId, isActive: true });
+            // Nếu có chỉ định walletId, tìm wallet đó
+            wallet = await Wallet.findOne({
+                _id: walletId,
+                userId: req.userId,
+                isActive: true
+            });
+
             if (!wallet) {
-                return res.status(404).json({ error: 'Ví không tồn tại hoặc không có quyền truy cập' });
+                return res.status(404).json({
+                    error: 'Ví không tồn tại hoặc không có quyền truy cập'
+                });
             }
-        } else if (type === 'income') {
-            wallet = await getOrCreateDefaultWallet(req.userId);
-            if (!wallet) {
-                return res.status(500).json({ error: 'Không thể tạo hoặc tìm ví mặc định' });
+
+            // Kiểm tra quyền giao dịch
+            if (!wallet.canUserTransact(req.userId)) {
+                return res.status(403).json({
+                    error: 'Bạn không có quyền giao dịch với ví này'
+                });
+            }
+        } else {
+            if (type === 'income') {
+                wallet = await getUserDefaultWallet(req.userId);
+                if (!wallet) {
+                    wallet = await getOrCreateDefaultWallet(req.userId);
+                    walletCreated = true;
+                }
+            } else if (type === 'expense') {
+                // Chi tiêu: phải chỉ định ví
+                return res.status(400).json({
+                    error: 'Cần chỉ định ví cho giao dịch chi tiêu',
+                    suggestion: 'Vui lòng chọn ví để trừ tiền'
+                });
             }
         }
-        const _user = await user.findById(req.userId);
-        if (!_user) return res.status(404).json({ error: 'User không tồn tại' });
 
-        const transaction = await new Transaction({
-            userId: _user._id,
+        if (!wallet) {
+            return res.status(500).json({
+                error: 'Không thể tạo hoặc tìm ví để ghi nhận giao dịch'
+            });
+        }
+
+        // Kiểm tra số dư cho chi tiêu
+        if (type === 'expense') {
+            const hasEnoughBalance = await checkWalletBalance(wallet._id, amount);
+            if (!hasEnoughBalance) {
+                return res.status(400).json({
+                    error: 'Số dư ví không đủ',
+                    currentBalance: wallet.balance,
+                    required: amount,
+                    shortfall: amount - wallet.balance
+                });
+            }
+        }
+
+        // Tạo transaction
+        const transaction = new Transaction({
+            userId: req.userId,
+            walletId: wallet._id,
             amount,
             type,
-            date,
-            description,
-            isShared,
-            categoryId,
-        }).save();
-        if (type === 'expense') {
-            // Với giao dịch chi tiêu: cập nhật spentAmount trong budget và trừ tiền từ wallet
-            await updateBudgetSpentAmounts(req.userId, transaction);
-
-            if (wallet) {
-                wallet.balance -= amount;
-                await wallet.save();
-            }
-        } else if (type === 'income') {
-            // Với giao dịch thu nhập: chỉ cộng tiền vào wallet
-            if (wallet) {
-                wallet.balance += amount;
-                await wallet.save();
-            }
-        }
-        const budgetWarning = type === 'expense' ? await checkBudgetWarning(req.userId, transaction) : null;
-
-        const populatedTransaction = await Transaction.findById(transaction._id)
-            .populate('categoryId', 'name')
-            .populate('walletId', 'name balance');
-
-        res.json({
-            message: 'Tạo giao dịch thành công',
-            transaction: populatedTransaction,
-            budgetWarning: budgetWarning || null,
-            walletCreated: wallet && wallet.isDefault ? true : false
+            date: date || new Date(),
+            description: description || '',
+            isShared: isShared || false,
+            categoryId: categoryId || null,
         });
+
+        await transaction.save();
+
+        // Cập nhật số dư wallet
+        if (type === 'expense') {
+            wallet.balance -= amount;
+            await wallet.save();
+
+            // Cập nhật budget
+            const budgetUpdateCount = await updateBudgetSpentAmounts(req.userId, transaction);
+            console.log(`✅ Updated ${budgetUpdateCount} budgets`);
+            const budgetWarnings = await checkBudgetWarning(req.userId, transaction);
+            const populatedTransaction = await Transaction.findById(transaction._id)
+                .populate('categoryId', 'name')
+                .populate('walletId', 'name balance scope type icon');
+            return res.status(201).json({
+                message: 'Tạo giao dịch thành công',
+                transaction: populatedTransaction,
+                budgetWarnings: budgetWarnings ? {
+                    count: budgetWarnings.length,
+                    hasError: budgetWarnings.some(w => w.level === 'error'),
+                    hasCritical: budgetWarnings.some(w => w.level === 'critical'),
+                    warnings: budgetWarnings
+                } : null,
+                walletInfo: {
+                    id: wallet._id,
+                    name: wallet.name,
+                    balance: wallet.balance
+                }
+            });
+        } else if (type === 'income') {
+            wallet.balance += amount;
+            await wallet.save();
+
+            const populatedTransaction = await Transaction.findById(transaction._id)
+                .populate('categoryId', 'name')
+                .populate('walletId', 'name balance scope type icon');
+
+            return res.status(201).json({
+                message: 'Tạo giao dịch thành công',
+                transaction: populatedTransaction,
+                walletInfo: {
+                    id: wallet._id,
+                    name: wallet.name,
+                    balance: wallet.balance
+                }
+            });
+        }
 
     } catch (err) {
         console.error('Create transaction error:', err);
-        res.status(500).json({ error: 'Lỗi server' });
+        res.status(500).json({ error: 'Lỗi server', message: err.message });
     }
 };
 
@@ -111,16 +182,44 @@ export const updateTransaction = async (req, res) => {
         const { transactionId } = req.params;
         const { amount, type, date, description, isShared, categoryId, walletId } = req.body;
 
-        const transaction = await Transaction.findOne({ _id: transactionId, userId: req.userId });
+        // Tìm transaction
+        const transaction = await Transaction.findOne({
+            _id: transactionId,
+            userId: req.userId
+        });
+
         if (!transaction) {
             return res.status(404).json({ error: 'Không tìm thấy giao dịch' });
         }
 
+        // Lưu giá trị cũ
         const oldAmount = transaction.amount;
         const oldType = transaction.type;
         const oldWalletId = transaction.walletId;
 
-        // Cập nhật thông tin giao dịch
+        // BƯỚC 1: Hoàn nguyên ví cũ
+        if (oldWalletId) {
+            const oldWallet = await Wallet.findById(oldWalletId);
+            if (oldWallet) {
+                if (oldType === 'expense') {
+                    oldWallet.balance += oldAmount; // Hoàn tiền
+                } else if (oldType === 'income') {
+                    oldWallet.balance -= oldAmount; // Trừ tiền
+                }
+                await oldWallet.save();
+            }
+        }
+
+        // BƯỚC 2: Hoàn nguyên budget (nếu là expense)
+        if (oldType === 'expense') {
+            const restoreTransaction = {
+                ...transaction.toObject(),
+                amount: -oldAmount
+            };
+            await updateBudgetSpentAmounts(req.userId, restoreTransaction);
+        }
+
+        // BƯỚC 3: Cập nhật thông tin transaction
         if (amount !== undefined) transaction.amount = amount;
         if (type !== undefined) transaction.type = type;
         if (date !== undefined) transaction.date = date;
@@ -131,96 +230,139 @@ export const updateTransaction = async (req, res) => {
 
         await transaction.save();
 
-        // Xử lý cập nhật wallet và budget
-        if (oldType === 'expense' || type === 'expense') {
-            if (oldType === 'expense') {
-                const restoreTransaction = { ...transaction.toObject(), amount: -oldAmount };
-                await updateBudgetSpentAmounts(req.userId, restoreTransaction);
-            }
-
-            if (type === 'expense') {
-                await updateBudgetSpentAmounts(req.userId, transaction);
-            }
-        }
-
-        // Xử lý cập nhật số dư wallet
-        if (oldWalletId) {
-            const oldWallet = await Wallet.findById(oldWalletId);
-            if (oldWallet) {
-                if (oldType === 'expense') {
-                    oldWallet.balance += oldAmount;
-                } else if (oldType === 'income') {
-                    oldWallet.balance -= oldAmount;
-                }
-                await oldWallet.save();
-            }
-        }
-
+        // BƯỚC 4: Xử lý ví mới
+        let newWallet = null;
         if (transaction.walletId) {
-            let currentWallet = await Wallet.findById(transaction.walletId);
+            newWallet = await Wallet.findById(transaction.walletId);
 
-            // Nếu không tìm thấy wallet và là giao dịch thu nhập, tạo wallet mặc định
-            if (!currentWallet && type === 'income') {
-                currentWallet = await getOrCreateDefaultWallet(req.userId);
-                if (currentWallet) {
-                    transaction.walletId = currentWallet._id;
+            // Nếu không tìm thấy wallet và là income, tạo mặc định
+            if (!newWallet && transaction.type === 'income') {
+                newWallet = await getUserDefaultWallet(req.userId);
+                if (newWallet) {
+                    transaction.walletId = newWallet._id;
                     await transaction.save();
                 }
             }
 
-            if (currentWallet) {
-                if (type === 'expense') {
-                    currentWallet.balance -= transaction.amount;
-                } else if (type === 'income') {
-                    currentWallet.balance += transaction.amount;
+            if (newWallet) {
+                // Kiểm tra số dư cho expense
+                if (transaction.type === 'expense') {
+                    if (newWallet.balance < transaction.amount) {
+                        // Rollback
+                        await transaction.deleteOne();
+                        if (oldWalletId) {
+                            const rollbackWallet = await Wallet.findById(oldWalletId);
+                            if (rollbackWallet) {
+                                if (oldType === 'expense') {
+                                    rollbackWallet.balance -= oldAmount;
+                                } else {
+                                    rollbackWallet.balance += oldAmount;
+                                }
+                                await rollbackWallet.save();
+                            }
+                        }
+
+                        return res.status(400).json({
+                            error: 'Số dư ví mới không đủ',
+                            currentBalance: newWallet.balance,
+                            required: transaction.amount
+                        });
+                    }
+
+                    newWallet.balance -= transaction.amount;
+                } else if (transaction.type === 'income') {
+                    newWallet.balance += transaction.amount;
                 }
-                await currentWallet.save();
+
+                await newWallet.save();
             }
         }
 
+        // BƯỚC 5: Cập nhật budget mới (nếu là expense)
+        if (transaction.type === 'expense') {
+            await updateBudgetSpentAmounts(req.userId, transaction);
+        }
+
+        // Populate và return
         const populatedTransaction = await Transaction.findById(transaction._id)
             .populate('categoryId', 'name')
-            .populate('walletId', 'name balance');
+            .populate('walletId', 'name balance scope type icon');
 
-        res.json({ message: 'Cập nhật giao dịch thành công', transaction: populatedTransaction });
+        res.json({
+            message: 'Cập nhật giao dịch thành công',
+            transaction: populatedTransaction
+        });
 
     } catch (err) {
         console.error('Update transaction error:', err);
-        res.status(500).json({ error: 'Lỗi server' });
+        res.status(500).json({ error: 'Lỗi server', message: err.message });
     }
 };
+
 
 export const deleteTransaction = async (req, res) => {
     try {
         const { transactionId } = req.params;
-        const transaction = await Transaction.findOne({ _id: transactionId, userId: req.userId });
+
+        const transaction = await Transaction.findOne({
+            _id: transactionId,
+            userId: req.userId
+        });
 
         if (!transaction) {
             return res.status(404).json({ error: 'Không tìm thấy giao dịch' });
         }
 
-        // Nếu là giao dịch chi tiêu, khôi phục số tiền trong budget và wallet
-        if (transaction.type === 'expense') {
-            // Khôi phục số tiền trong budget
-            const restoreTransaction = { ...transaction.toObject(), amount: -transaction.amount };
-            await updateBudgetSpentAmounts(req.userId, restoreTransaction);
-
-            // Khôi phục số tiền trong wallet nếu có
-            if (transaction.walletId) {
-                const wallet = await Wallet.findById(transaction.walletId);
-                if (wallet) {
-                    wallet.balance += transaction.amount;
-                    await wallet.save();
+        // Hoàn nguyên wallet
+        if (transaction.walletId) {
+            const wallet = await Wallet.findById(transaction.walletId);
+            if (wallet) {
+                if (transaction.type === 'expense') {
+                    wallet.balance += transaction.amount; // Hoàn tiền
+                } else if (transaction.type === 'income') {
+                    wallet.balance -= transaction.amount; // Trừ tiền
                 }
+                await wallet.save();
             }
         }
 
-        await Transaction.deleteOne({ _id: transactionId, userId: req.userId });
+        // Hoàn nguyên budget (nếu là expense)
+        if (transaction.type === 'expense') {
+            const restoreTransaction = {
+                ...transaction.toObject(),
+                amount: -transaction.amount
+            };
+            await updateBudgetSpentAmounts(req.userId, restoreTransaction);
+        }
 
-        res.json({ message: 'Đã xóa giao dịch thành công' });
+        // Xóa transaction
+        await Transaction.deleteOne({ _id: transactionId });
+
+        res.json({
+            message: 'Đã xóa giao dịch thành công',
+            restoredBalance: transaction.amount
+        });
 
     } catch (err) {
         console.error('Delete transaction error:', err);
+        res.status(500).json({ error: 'Lỗi server' });
+    }
+};
+
+export const getTransactionById = async (req, res) => {
+    try {
+        const { transactionId } = req.params;
+        const transaction = await Transaction.findOne({ _id: transactionId, userId: req.userId })
+            .populate('categoryId', 'name')
+            .populate('walletId', 'name balance');
+
+        if (!transaction) {
+            return res.status(404).json({ error: 'Không tìm thấy giao dịch' });
+        }
+
+        res.json({ transaction });
+    } catch (err) {
+        console.error('Get transaction by ID error:', err);
         res.status(500).json({ error: 'Lỗi server' });
     }
 };

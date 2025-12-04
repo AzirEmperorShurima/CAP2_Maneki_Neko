@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { createBudget, deleteBudget, getBudgetById, getBudgets, renewBudget, updateBudget } from '../controllers/budgetController.js';
+import { createBudget, deleteBudget, getBudgetById, getBudgets, updateBudget } from '../controllers/budgetController.js';
 
 const budgetRouter = Router();
 budgetRouter.get('/health', (req, res) => {
@@ -10,6 +10,5 @@ budgetRouter.get('/', getBudgets);
 budgetRouter.get('/:id', getBudgetById);
 budgetRouter.put('/:id', updateBudget);
 budgetRouter.delete('/:id', deleteBudget);
-budgetRouter.post('/:id/renew', renewBudget);
 
 export default budgetRouter;

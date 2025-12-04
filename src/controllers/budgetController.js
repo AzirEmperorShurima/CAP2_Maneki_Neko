@@ -27,34 +27,31 @@ const findOverlappingBudget = async (userId, type, periodStart, periodEnd, categ
         userId,
         type,
         isActive: true,
-        // Kiểm tra overlap: hai khoảng thời gian giao nhau khi:
-        // periodStart của budget mới < periodEnd của budget cũ VÀ
-        // periodEnd của budget mới > periodStart của budget cũ
         periodStart: { $lt: periodEnd },
         periodEnd: { $gt: periodStart }
     };
 
-    // Nếu đang update, loại trừ chính budget đó
     if (excludeBudgetId) {
         query._id = { $ne: excludeBudgetId };
     }
 
-    // Kiểm tra cùng category hoặc cùng không có category
-    if (categoryId) {
-        query.categoryId = categoryId;
+    if (categoryId !== undefined) {
+        query.categoryId = categoryId || null;
     } else {
         query.categoryId = null;
     }
 
-    // Kiểm tra cùng parent hoặc cùng không có parent
-    if (parentBudgetId) {
-        query.parentBudgetId = parentBudgetId;
+    if (parentBudgetId !== undefined) {
+        query.parentBudgetId = parentBudgetId || null;
     } else {
         query.parentBudgetId = null;
     }
 
+    console.log('🔍 Finding overlapping budget with query:', JSON.stringify(query, null, 2));
+
     return await Budget.findOne(query).populate('categoryId parentBudgetId');
 };
+
 
 /**
  * Tính toán period start và end dựa trên type và input date
@@ -213,7 +210,7 @@ export const createBudget = async (req, res) => {
             return res.status(400).json({ error: err.message });
         }
 
-        // Nếu tạo ngân sách chia sẻ, kiểm tra quyền admin của family
+        // Kiểm tra quyền gia đình
         let familyId = null;
         if (isShared) {
             const familyUser = await Family.findOne({ _id: bodyFamilyId, adminId: req.userId });
@@ -223,14 +220,17 @@ export const createBudget = async (req, res) => {
             familyId = bodyFamilyId;
         }
 
-        // Kiểm tra budget trùng khoảng thời gian
+        const normalizedCategoryId = categoryId || null;
+        const normalizedParentBudgetId = parentBudgetId || null;
+
+        // Kiểm tra budget trùng (với logic đã fix)
         const existingBudget = await findOverlappingBudget(
             req.userId,
             type,
             periodStart,
             periodEnd,
-            categoryId,
-            parentBudgetId
+            normalizedCategoryId,
+            normalizedParentBudgetId
         );
 
         if (existingBudget) {
@@ -238,7 +238,7 @@ export const createBudget = async (req, res) => {
                 // Cập nhật budget hiện có
                 existingBudget.amount = amount;
 
-                // Kiểm tra ràng buộc parent-child nếu có
+                // Kiểm tra ràng buộc parent-child
                 const childBudgets = await Budget.find({
                     parentBudgetId: existingBudget._id,
                     userId: req.userId,
@@ -274,9 +274,46 @@ export const createBudget = async (req, res) => {
             }
         }
 
-        // Kiểm tra nếu có parentBudgetId
-        if (parentBudgetId) {
-            const parentBudget = await Budget.findOne({ _id: parentBudgetId, userId: req.userId });
+        const overlappingBudgets = await Budget.find({
+            userId: req.userId,
+            type,
+            isActive: true,
+            categoryId: normalizedCategoryId,
+            parentBudgetId: normalizedParentBudgetId,
+            $or: [
+                {
+                    periodStart: { $lte: periodStart },
+                    periodEnd: { $gte: periodStart }
+                },
+                {
+                    periodStart: { $lte: periodEnd },
+                    periodEnd: { $gte: periodEnd }
+                },
+                {
+                    periodStart: { $gte: periodStart },
+                    periodEnd: { $lte: periodEnd }
+                }
+            ]
+        });
+
+        if (overlappingBudgets.length > 0) {
+            const deactivatedIds = overlappingBudgets.map(b => b._id);
+
+            await Budget.updateMany(
+                { _id: { $in: deactivatedIds } },
+                { $set: { isActive: false } }
+            );
+
+            console.log(`🔄 Auto-deactivated ${overlappingBudgets.length} overlapping budgets`);
+        }
+
+        // Kiểm tra parentBudget
+        if (normalizedParentBudgetId) {
+            const parentBudget = await Budget.findOne({
+                _id: normalizedParentBudgetId,
+                userId: req.userId
+            });
+
             if (!parentBudget) {
                 return res.status(404).json({ error: 'Không tìm thấy ngân sách cha' });
             }
@@ -296,7 +333,7 @@ export const createBudget = async (req, res) => {
 
             // Kiểm tra tổng budget con không vượt quá parent
             const existingChildBudgets = await Budget.find({
-                parentBudgetId: parentBudgetId,
+                parentBudgetId: normalizedParentBudgetId,
                 userId: req.userId,
                 isActive: true
             });
@@ -321,10 +358,10 @@ export const createBudget = async (req, res) => {
             userId: req.userId,
             type,
             amount,
-            categoryId: categoryId || null,
+            categoryId: normalizedCategoryId,
             familyId: familyId || null,
             isShared: isShared || false,
-            parentBudgetId: parentBudgetId || null,
+            parentBudgetId: normalizedParentBudgetId,
             isDerived: false,
             periodStart,
             periodEnd,
@@ -339,7 +376,8 @@ export const createBudget = async (req, res) => {
         res.status(201).json({
             message: 'Tạo ngân sách thành công',
             budget: populatedBudget,
-            isUpdated: false
+            isUpdated: false,
+            deactivatedCount: overlappingBudgets.length
         });
 
     } catch (error) {
@@ -587,67 +625,6 @@ export const deleteBudget = async (req, res) => {
         res.json({ message: 'Đã xóa ngân sách thành công' });
     } catch (error) {
         console.error('Lỗi xóa ngân sách:', error);
-        res.status(500).json({ error: 'Lỗi server' });
-    }
-};
-
-export const renewBudget = async (req, res) => {
-    try {
-        const { id } = req.params;
-        const budget = await Budget.findOne({ _id: id, userId: req.userId });
-
-        if (!budget) {
-            return res.status(404).json({ error: 'Không tìm thấy ngân sách' });
-        }
-
-        // Kiểm tra xem budget có còn trong kỳ hiện tại không
-        const now = dayjs();
-        const isCurrentPeriodValid = now.isBetween(budget.periodStart, budget.periodEnd, null, '[]');
-
-        if (isCurrentPeriodValid) {
-            return res.status(400).json({
-                error: 'Ngân sách hiện tại vẫn còn trong kỳ, không cần gia hạn'
-            });
-        }
-
-        // Tính kỳ mới dựa trên kỳ cũ
-        const oldPeriodStart = dayjs(budget.periodStart);
-        const oldPeriodEnd = dayjs(budget.periodEnd);
-        const duration = oldPeriodEnd.diff(oldPeriodStart, 'day');
-
-        const newPeriodStart = oldPeriodEnd.add(1, 'day').startOf('day').toDate();
-        const newPeriodEnd = dayjs(newPeriodStart).add(duration, 'day').endOf('day').toDate();
-
-        // Tạo một budget mới với cùng thông tin nhưng kỳ mới
-        const newBudget = new Budget({
-            userId: budget.userId,
-            type: budget.type,
-            amount: budget.amount,
-            categoryId: budget.categoryId,
-            parentBudgetId: budget.parentBudgetId,
-            isDerived: budget.isDerived,
-            familyId: budget.familyId,
-            isShared: budget.isShared,
-            periodStart: newPeriodStart,
-            periodEnd: newPeriodEnd,
-            spentAmount: 0,
-            isActive: true
-        });
-
-        await newBudget.save();
-
-        // Xóa budget cũ sau khi đã tạo budget mới thành công
-        await Budget.deleteOne({ _id: budget._id });
-
-        const populatedNewBudget = await Budget.findById(newBudget._id)
-            .populate('categoryId parentBudgetId');
-
-        res.json({
-            message: 'Đã gia hạn ngân sách cho kỳ mới',
-            budget: populatedNewBudget
-        });
-    } catch (error) {
-        console.error('Lỗi gia hạn ngân sách:', error);
         res.status(500).json({ error: 'Lỗi server' });
     }
 };

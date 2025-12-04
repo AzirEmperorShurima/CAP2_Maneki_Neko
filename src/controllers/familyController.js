@@ -107,7 +107,7 @@ export const sendInviteEmail = async (req, res) => {
 
         const admin = await User.findById(req.userId);
         if (!admin.familyId || !admin.isFamilyAdmin) {
-            return res.status(403).json({ error: 'Chỉ admin được mời' });
+            return res.status(403).json({ error: 'Bạn phải ở trong 1 gia đình và là admin của gia đình' });
         }
 
         const family = await Family.findById(admin.familyId);
