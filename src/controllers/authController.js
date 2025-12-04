@@ -39,14 +39,17 @@ export const register = async (req, res) => {
             username: username || email.split('@')[0],
             authProvider: 'local'
         });
+        const accessToken = jwt.sign(
+            { id: newUser._id },
+            process.env.JWT_SECRET,
+            { expiresIn: "7d" }
+        );
 
         res.status(201).json({
             message: 'Đăng ký thành công',
-            user: {
-                id: newUser._id,
-                email: newUser.email,
-                username: newUser.username,
-            },
+            userId: newUser._id,
+            accessToken,
+            expiresAt: 7 * 24 * 60 * 60
         });
     } catch (err) {
         console.error('Register error:', err);
