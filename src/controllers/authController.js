@@ -387,7 +387,7 @@ export const getUserProfile = async (req, res) => {
                     _id: member._id,
                     username: member.username,
                     email: member.email,
-                    avatar: member.avatar || null,
+                    avatar: member.avatar || "null",
                     isAdmin: member._id.toString() === family.adminId.toString(),
                 })),
             };
