@@ -1,7 +1,6 @@
 // filename: controllers/reports.js
 import Transaction from '../models/transaction.js';
 import Budget from '../models/budget.js';
-import Category from '../models/category.js';
 import dayjs from 'dayjs';
 import weekday from 'dayjs/plugin/weekday.js';
 import weekOfYear from 'dayjs/plugin/weekOfYear.js';

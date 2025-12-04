@@ -11,6 +11,7 @@ import walletRouter from "./wallet.route.js";
 import budgetRouter from "./budget.route.js";
 import fcmRouter from "./fcm.route.js";
 import categoryRouter from "./category.route.js";
+import analyticsRouter from "./analytics.route.js";
 
 const apiRouter = Router()
 
@@ -42,5 +43,6 @@ apiRouter.use("/budget", budgetRouter)
 apiRouter.use("/wallet", walletRouter)
 apiRouter.use("/goal", goalRouter)
 apiRouter.use("/category", categoryRouter)
+apiRouter.use("/analytics", analyticsRouter)
 
 export default apiRouter
