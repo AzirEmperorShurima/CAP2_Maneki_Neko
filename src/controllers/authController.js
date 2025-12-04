@@ -253,7 +253,7 @@ export const verifyGoogleId = async (req, res) => {
 
     } catch (err) {
         console.error('Google auth error:', err);
-        res.status(401).json({ error: "Token Google không hợp lệ" });
+        res.status(401).json({ error: "Token Google không hợp lệ", message: err });
     }
 };
 

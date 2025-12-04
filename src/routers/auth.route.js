@@ -12,7 +12,7 @@ authRouter.get("/", (req, res) => {
 
 authRouter.post("/register", register)
 authRouter.post("/login", login)
-authRouter.get("/login/verify/google-id", verifyGoogleId)
+authRouter.post("/login/verify/google-id", verifyGoogleId)
 authRouter.post("/logout", logout)
 authRouter.delete("/remove-user", deleteUser)
 
