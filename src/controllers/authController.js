@@ -124,7 +124,7 @@ export const login = async (req, res) => {
         res.json({
             message: 'Đăng nhập thành công',
             data: {
-                userId: newUser._id,
+                userId: user._id,
                 accessToken,
                 expiresAt: 7 * 24 * 60 * 60
             }
