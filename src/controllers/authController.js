@@ -372,7 +372,7 @@ export const getUserProfile = async (req, res) => {
             authProvider: user.authProvider,
             hasPassword: user.hasPassword(),
             hasGoogleLinked: user.isGoogleLinked(),
-            family: null,
+            family: user.familyId ? user.familyId : "null",
             isFamilyAdmin: user.isFamilyAdmin || false,
         };
 
