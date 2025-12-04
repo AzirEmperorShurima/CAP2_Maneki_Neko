@@ -157,7 +157,9 @@ export const verifyGoogleId = async (req, res) => {
             });
         }
 
-        const { idToken, deviceId, fcmToken, platform } = value;
+        const { idToken
+            // , deviceId, fcmToken, platform 
+        } = value;
 
         // Verify Google token
         const client = new OAuth2Client(googleAppClientId);
@@ -258,29 +260,29 @@ export const verifyGoogleId = async (req, res) => {
 // ===== ĐĂNG XUẤT =====
 export const logout = async (req, res) => {
     try {
-        const { deviceId } = req.body;
+        // const { deviceId } = req.body;
 
-        if (!deviceId) {
-            return res.status(400).json({
-                error: 'deviceId là bắt buộc để đăng xuất thiết bị'
-            });
-        }
+        // if (!deviceId) {
+        //     return res.status(400).json({
+        //         error: 'deviceId là bắt buộc để đăng xuất thiết bị'
+        //     });
+        // }
 
-        const result = await RefreshToken.updateMany(
-            {
-                userId: req.userId,
-                deviceId: deviceId,
-                isValid: true
-            },
-            { isValid: false }
-        );
+        // const result = await RefreshToken.updateMany(
+        //     {
+        //         userId: req.userId,
+        //         deviceId: deviceId,
+        //         isValid: true
+        //     },
+        //     { isValid: false }
+        // );
 
-        const message = result.modifiedCount === 0
-            ? 'Không tìm thấy phiên đăng nhập của thiết bị này'
-            : 'Đã đăng xuất thiết bị thành công';
+        // const message = result.modifiedCount === 0
+        //     ? 'Không tìm thấy phiên đăng nhập của thiết bị này'
+        //     : 'Đã đăng xuất thiết bị thành công';
 
         res.json({
-            message: message
+            message: "Đã đăng xuất thiết bị thành công'"
         });
 
     } catch (error) {

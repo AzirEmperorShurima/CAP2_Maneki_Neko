@@ -10,12 +10,12 @@ class AnalyticsController {
      */
     async getOverview(req, res) {
         try {
-            const userId = req.user.id;
+            const userId = req.userId
             const {
                 startDate,
                 endDate,
                 includeFamily = 'false',
-                familyId
+                familyId = ""
             } = req.query;
 
             const options = {
@@ -56,7 +56,7 @@ class AnalyticsController {
      */
     async getExpenseByCategory(req, res) {
         try {
-            const userId = req.user.id;
+            const userId = req.userId
             const {
                 startDate,
                 endDate,
