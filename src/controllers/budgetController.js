@@ -291,8 +291,10 @@ export const createBudget = async (req, res) => {
                 return res.status(409).json({
                     error: 'Ngân sách đã tồn tại trong khoảng thời gian này',
                     message: 'Ngân sách đã tồn tại trong khoảng thời gian này',
-                    budget: normalizeBudget(existingBudget),
-                    isUpdated: false
+                    data: {
+                        budget: normalizeBudget(existingBudget),
+                        isUpdated: false
+                    }
                 });
             }
         }
@@ -365,8 +367,8 @@ export const createBudget = async (req, res) => {
 
             if (totalChildAmount + amount > parentBudget.amount) {
                 return res.status(400).json({
-                    error: 'Tổng ngân sách con không được vượt quá ngân sách cha',
-                    details: {
+                    message: 'Tổng ngân sách con không được vượt quá ngân sách cha',
+                    data: {
                         parentAmount: parentBudget.amount,
                         currentChildTotal: totalChildAmount,
                         requestedAmount: amount,
@@ -612,7 +614,9 @@ export const updateBudget = async (req, res) => {
 
         res.json({
             message: 'Cập nhật ngân sách thành công',
-            budget: normalizeBudget(populatedBudget)
+            data: {
+                budget: normalizeBudget(populatedBudget)
+            }
         });
     } catch (error) {
         console.error('Lỗi cập nhật ngân sách:', error);
