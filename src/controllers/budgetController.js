@@ -18,6 +18,27 @@ dayjs.Ls.en.weekStart = 1;
 
 const VIETNAM_TZ = 'Asia/Ho_Chi_Minh';
 
+const normalizeIdObject = (obj) => {
+    if (!obj) return obj;
+    if (typeof obj === 'object' && obj._id) {
+        const { _id, __v, ...rest } = obj;
+        return { ...rest, id: _id.toString() };
+    }
+    return obj;
+};
+
+const normalizeBudget = (budget) => {
+    if (!budget) return null;
+    const src = typeof budget.toObject === 'function' ? budget.toObject() : budget;
+    const { _id, categoryId, parentBudgetId, __v, ...rest } = src;
+    return {
+        ...rest,
+        id: _id && _id.toString ? _id.toString() : String(_id),
+        categoryId: normalizeIdObject(categoryId),
+        parentBudgetId: normalizeIdObject(parentBudgetId)
+    };
+};
+
 /**
  * Kiểm tra xem có budget trùng khoảng thời gian không
  * Budget trùng khi: có cùng userId, type, categoryId, parentBudgetId và khoảng thời gian giao nhau
@@ -259,18 +280,18 @@ export const createBudget = async (req, res) => {
                 const populatedBudget = await Budget.findById(existingBudget._id)
                     .populate('parentBudgetId categoryId');
 
-        return res.status(200).json({
-            message: 'Đã cập nhật ngân sách có sẵn',
-            data: {
-                budget: populatedBudget,
-                isUpdated: true
-            }
-        });
+                return res.status(200).json({
+                    message: 'Đã cập nhật ngân sách có sẵn',
+                    data: {
+                        budget: normalizeBudget(populatedBudget),
+                        isUpdated: true
+                    }
+                });
             } else {
                 return res.status(409).json({
                     error: 'Ngân sách đã tồn tại trong khoảng thời gian này',
                     message: 'Ngân sách đã tồn tại trong khoảng thời gian này',
-                    budget: existingBudget,
+                    budget: normalizeBudget(existingBudget),
                     isUpdated: false
                 });
             }
@@ -378,7 +399,7 @@ export const createBudget = async (req, res) => {
         res.status(201).json({
             message: 'Tạo ngân sách thành công',
             data: {
-                budget: populatedBudget,
+                budget: normalizeBudget(populatedBudget),
                 isUpdated: false,
                 deactivatedCount: overlappingBudgets.length
             }
@@ -439,7 +460,7 @@ export const getBudgets = async (req, res) => {
         res.json({
             message: 'Lấy danh sách ngân sách thành công',
             data: {
-                budgets,
+                budgets: budgets.map(normalizeBudget),
                 pagination: {
                     page,
                     limit,
@@ -479,8 +500,8 @@ export const getBudgetById = async (req, res) => {
         res.json({
             message: 'Lấy thông tin ngân sách thành công',
             data: {
-                budget,
-                childBudgets,
+                budget: normalizeBudget(budget),
+                childBudgets: childBudgets.map(normalizeBudget),
                 summary: {
                     totalChildAmount,
                     totalChildSpent,
@@ -591,7 +612,7 @@ export const updateBudget = async (req, res) => {
 
         res.json({
             message: 'Cập nhật ngân sách thành công',
-            budget: populatedBudget
+            budget: normalizeBudget(populatedBudget)
         });
     } catch (error) {
         console.error('Lỗi cập nhật ngân sách:', error);
@@ -650,7 +671,7 @@ export const getActiveBudgetsForCurrentPeriod = async (req, res) => {
             .populate('categoryId parentBudgetId')
             .sort({ type: 1 });
 
-        res.json({ message: 'Lấy ngân sách đang hoạt động thành công', data: budgets });
+        res.json({ message: 'Lấy ngân sách đang hoạt động thành công', data: budgets.map(normalizeBudget) });
     } catch (error) {
         console.error('Lỗi lấy danh sách ngân sách hiện tại:', error);
         res.status(500).json({ error: 'Lỗi server' });
@@ -681,8 +702,8 @@ export const getBudgetSummary = async (req, res) => {
         res.json({
             message: 'Lấy tổng quan ngân sách thành công',
             data: {
-                budget,
-                childBudgets,
+                budget: normalizeBudget(budget),
+                childBudgets: childBudgets.map(normalizeBudget),
                 summary: {
                     totalChildAmount,
                     totalChildSpent,

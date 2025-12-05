@@ -372,14 +372,19 @@ export const geminiChatController = async (req, res) => {
 
     // Trả về kết quả
     res.json({
-      reply: reply.trim(),
-      transaction: transaction || null,
+      message: reply.trim(),
+      data: {
+        transaction: transaction || null,
+      }
     });
 
   } catch (error) {
     console.error('Lỗi trong geminiChatController:', error);
     res.status(500).json({
-      reply: 'Ôi không, mình bị lỗi rồi. Thử lại sau vài giây nhé!'
+      message: 'Ôi không, mình bị lỗi rồi. Thử lại sau vài giây nhé!',
+      data: {
+        error: error.message
+      }
     });
   }
 };

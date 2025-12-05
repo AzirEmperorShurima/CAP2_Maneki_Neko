@@ -106,7 +106,9 @@ export const createWallet = async (req, res) => {
 
       return res.status(201).json({
         message: 'Tạo ví cá nhân thành công',
-        wallet
+        data: {
+          wallet
+        }
       });
     }
   } catch (error) {
@@ -162,20 +164,35 @@ export const getWallets = async (req, res) => {
       };
     });
 
-    // Phân loại ví
+    // Chuẩn hóa id và userId trong response
+    const normalizeWallet = (wallet) => {
+      if (!wallet) return null;
+      const { _id, userId, __v, ...rest } = wallet;
+      return {
+        ...rest,
+        id: _id && _id.toString ? _id.toString() : String(_id),
+        userId: userId && typeof userId === 'object' && userId._id
+          ? userId._id.toString()
+          : (userId !== undefined && userId !== null ? String(userId) : null)
+      };
+    };
+
+    const normalizedWallets = walletsWithPermissions.map(normalizeWallet);
+
+    // Phân loại ví (đã chuẩn hóa)
     const categorized = {
-      personal: walletsWithPermissions.filter(w => w.scope === 'personal'),
-      family: walletsWithPermissions.filter(w => w.scope === 'family'),
+      personal: normalizedWallets.filter(w => w.scope === 'personal'),
+      family: normalizedWallets.filter(w => w.scope === 'family'),
       system: {
-        receive: walletsWithPermissions.find(w => w.scope === 'default_receive'),
-        savings: walletsWithPermissions.find(w => w.scope === 'default_savings'),
-        debt: walletsWithPermissions.find(w => w.scope === 'default_debt')
+        receive: normalizedWallets.find(w => w.scope === 'default_receive'),
+        savings: normalizedWallets.find(w => w.scope === 'default_savings'),
+        debt: normalizedWallets.find(w => w.scope === 'default_debt')
       }
     };
 
     // Thống kê theo mục đích (type)
     const typeStats = {};
-    walletsWithPermissions
+    normalizedWallets
       .filter(w => w.type && !w.isSystemWallet)
       .forEach(w => {
         if (!typeStats[w.type]) {
@@ -189,17 +206,20 @@ export const getWallets = async (req, res) => {
       });
 
     res.json({
-      wallets: walletsWithPermissions,
-      categorized,
-      summary: {
-        total: walletsWithPermissions.length,
-        personal: categorized.personal.length,
-        family: categorized.family.length,
-        totalBalance: walletsWithPermissions.reduce((sum, w) => sum + w.balance, 0),
-        totalDebt: categorized.system.debt ?
-          Math.abs(Math.min(0, categorized.system.debt.balance)) : 0
-      },
-      typeStats // Thống kê theo mục đích
+      message: 'Lấy danh sách ví thành công',
+      data: {
+        wallets: normalizedWallets,
+        categorized,
+        summary: {
+          total: normalizedWallets.length,
+          personal: categorized.personal.length,
+          family: categorized.family.length,
+          totalBalance: normalizedWallets.reduce((sum, w) => sum + w.balance, 0),
+          totalDebt: categorized.system.debt ?
+            Math.abs(Math.min(0, categorized.system.debt.balance)) : 0
+        },
+        typeStats
+      }
     });
   } catch (error) {
     console.error('Lỗi lấy danh sách ví:', error);
@@ -233,11 +253,14 @@ export const getWalletById = async (req, res) => {
     const ownerId = wallet?.userId && wallet.userId._id ? wallet.userId._id : wallet.userId;
     const isOwner = String(ownerId) === String(req.userId);
     res.json({
-      wallet,
-      permissions: {
-        canView: true,
-        canTransact: wallet.canUserTransact(req.userId),
-        isOwner
+      message: 'Lấy thông tin ví thành công',
+      data: {
+        wallet,
+        permissions: {
+          canView: true,
+          canTransact: wallet.canUserTransact(req.userId),
+          isOwner
+        }
       }
     });
   } catch (error) {
@@ -294,7 +317,9 @@ export const updateWallet = async (req, res) => {
 
     res.json({
       message: 'Cập nhật ví thành công',
-      wallet: populatedWallet
+      data: {
+        wallet: populatedWallet
+      }
     });
   } catch (error) {
     console.error('Lỗi cập nhật ví:', error);
@@ -401,16 +426,16 @@ export const deleteWallet = async (req, res) => {
 
     res.json({
       message: 'Đã xóa ví thành công',
-      deletedWallet: {
+      data: {
         name: wallet.name,
         type: wallet.type,
-        scope: wallet.scope
-      },
-      balanceTransferred: balance !== 0 ? {
-        amount: Math.abs(balance),
-        to: balance > 0 ? 'Quỹ Tiết Kiệm' : 'Ví Ghi Nợ',
-        transfer: transferRecord
-      } : null
+        scope: wallet.scope,
+        balanceTransferred: balance !== 0 ? {
+          amount: Math.abs(balance),
+          to: balance > 0 ? 'Quỹ Tiết Kiệm' : 'Ví Ghi Nợ',
+          transfer: transferRecord
+        } : null
+      }
     });
 
   } catch (error) {
@@ -554,9 +579,11 @@ export const transferBetweenWallets = async (req, res) => {
 
     res.json({
       message: 'Chuyển tiền thành công',
-      transfer: populatedTransfer,
-      warning: fromWallet.balance < 0 ?
-        'Ví nguồn đã vượt quá số dư và chuyển sang trạng thái âm' : null
+      data: {
+        transfer: populatedTransfer,
+        warning: fromWallet.balance < 0 ?
+          'Ví nguồn đã vượt quá số dư và chuyển sang trạng thái âm' : null
+      }
     });
 
   } catch (error) {
@@ -613,12 +640,15 @@ export const getTransferHistory = async (req, res) => {
     ]);
 
     res.json({
-      transfers,
-      pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total,
-        totalPages: Math.ceil(total / limit)
+      message: 'Lấy lịch sử chuyển tiền thành công',
+      data: {
+        transfers,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total,
+          totalPages: Math.ceil(total / limit)
+        }
       }
     });
   } catch (error) {
@@ -687,7 +717,9 @@ export const manageWalletAccess = async (req, res) => {
 
     res.json({
       message: 'Cập nhật quyền truy cập thành công',
-      wallet: populatedWallet
+      data: {
+        wallet: populatedWallet
+      }
     });
   } catch (error) {
     console.error('Lỗi quản lý quyền truy cập:', error);
@@ -760,8 +792,10 @@ export const payDebt = async (req, res) => {
 
     res.json({
       message: 'Thanh toán nợ thành công',
-      paid: payAmount,
-      remaining: Math.abs(Math.min(0, debtWallet.balance))
+      data: {
+        paid: payAmount,
+        remaining: Math.abs(Math.min(0, debtWallet.balance))
+      }
     });
 
   } catch (error) {

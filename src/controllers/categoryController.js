@@ -69,25 +69,55 @@ export const updateCategory = async (req, res) => {
 };
 
 export const getCategories = async (req, res) => {
-    const { error, value } = validateGetCategoriesQuery(req.query);
-    if (error) {
-        return res.status(400).json({ error: 'Invalid query', details: error.details.map(d => ({ field: d.path.join('.'), message: d.message })) });
-    }
-    const { type } = value;
-    const _user = await user.findById(req.userId).lean();
+    try {
+        const { error, value } = validateGetCategoriesQuery(req.query);
+        if (error) {
+            return res.status(400).json({ 
+                error: 'Invalid query', 
+                details: error.details.map(d => ({ 
+                    field: d.path.join('.'), 
+                    message: d.message 
+                })) 
+            });
+        }
+        const { type } = value;
+        const _user = await user.findById(req.userId).lean();
+        
+        if (!_user) {
+            return res.status(404).json({ error: 'Không tìm thấy người dùng' });
+        }
 
-    const match = {
-        $or: [
+        // Build query conditions
+        const orConditions = [
             { scope: 'system', isDefault: true },
-            { scope: 'personal', userId: _user._id },
-            { scope: 'family', familyId: _user.familyId }
-        ]
-    };
-    if (type) match.type = type;
+            { scope: 'personal', userId: _user._id }
+        ];
+        
+        if (_user.familyId) {
+            orConditions.push({ scope: 'family', familyId: _user.familyId });
+        }
 
-    const categories = await category.find(match)
-        .select('name type scope')
-        .sort({ scope: 1, name: 1 });
+        const match = { $or: orConditions };
+        if (type) {
+            match.type = type;
+        }
 
-    res.json({ message: 'Lấy danh mục thành công', data: categories });
+        console.log('Query match:', JSON.stringify(match, null, 2));
+        console.log('User info:', { userId: _user._id, familyId: _user.familyId });
+
+        const categories = await category.find(match)
+            .select('_id name type scope userId familyId isDefault')
+            .sort({ scope: 1, name: 1 })
+            .lean();
+
+        console.log('Found categories:', categories.length);
+
+        res.json({ 
+            message: 'Lấy danh mục thành công', 
+            data: categories 
+        });
+    } catch (err) {
+        console.error('getCategories error:', err);
+        return res.status(500).json({ error: 'Lỗi server' });
+    }
 };

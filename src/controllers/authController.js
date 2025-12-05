@@ -228,18 +228,11 @@ export const verifyGoogleId = async (req, res) => {
         //     refreshTokenValue = await renewRefreshToken(user._id, deviceId);
         // }
 
-        res.json({
+         res.json({
             message: 'Đăng nhập thành công',
             data: {
-                user: {
-                    id: user._id,
-                    username: user.username,
-                    email: user.email,
-                    avatar: user.avatar || null,
-                    authProvider: user.authProvider
-                },
+                userId: user._id,
                 accessToken,
-                // refreshToken: refreshTokenValue,
                 expiresAt: 7 * 24 * 60 * 60
             }
         });
