@@ -163,3 +163,17 @@ export const getUserTotalBalance = async (userId) => {
         return 0;
     }
 };
+
+export const getOrCreateDefaultExpenseWallet = async (userId, familyId = null) => {
+    try {
+        const wallet = await Wallet.getOrCreateDefaultWallet(
+            userId,
+            'default_expense',
+            familyId
+        );
+        return wallet;
+    } catch (error) {
+        console.error('Lỗi khi tạo/lấy ví chi tiêu mặc định:', error);
+        return null;
+    }
+};

@@ -5,7 +5,7 @@ import { validateCreateTransaction } from "../validations/transaction.js";
 
 import * as transactionService from '../services/transactions/analytics/transactionAlalytics.js';
 import { checkBudgetWarning, updateBudgetSpentAmounts } from "../utils/budget.js";
-import { checkWalletBalance, getOrCreateDefaultWallet, getUserDefaultWallet } from "../utils/wallet.js";
+import { checkWalletBalance, getOrCreateDefaultWallet, getUserDefaultWallet, getOrCreateDefaultExpenseWallet } from "../utils/wallet.js";
 
 // for self learning AI module in future
 // export const correctTransaction = async (req, res) => {
@@ -77,17 +77,11 @@ export const createTransaction = async (req, res) => {
             }
         } else {
             if (type === 'income') {
-                wallet = await getUserDefaultWallet(req.userId);
-                if (!wallet) {
-                    wallet = await getOrCreateDefaultWallet(req.userId);
-                    walletCreated = true;
-                }
+                wallet = await getOrCreateDefaultWallet(req.userId);
+                walletCreated = true;
             } else if (type === 'expense') {
-                // Chi tiêu: phải chỉ định ví
-                return res.status(400).json({
-                    error: 'Cần chỉ định ví cho giao dịch chi tiêu',
-                    suggestion: 'Vui lòng chọn ví để trừ tiền'
-                });
+                wallet = await getOrCreateDefaultExpenseWallet(req.userId);
+                walletCreated = true;
             }
         }
 
@@ -97,16 +91,17 @@ export const createTransaction = async (req, res) => {
             });
         }
 
-        // Kiểm tra số dư cho chi tiêu
+        let lowBalanceWarning = null;
         if (type === 'expense') {
             const hasEnoughBalance = await checkWalletBalance(wallet._id, amount);
             if (!hasEnoughBalance) {
-                return res.status(400).json({
-                    error: 'Số dư ví không đủ',
+                lowBalanceWarning = {
+                    code: 'LOW_BALANCE',
+                    walletId: wallet._id,
                     currentBalance: wallet.balance,
                     required: amount,
                     shortfall: amount - wallet.balance
-                });
+                };
             }
         }
 
@@ -136,16 +131,27 @@ export const createTransaction = async (req, res) => {
             const populatedTransaction = await Transaction.findById(transaction._id)
                 .populate('categoryId', 'name')
                 .populate('walletId', 'name balance scope type icon');
+            const normalizedTransaction = (() => {
+                const src = typeof populatedTransaction.toObject === 'function' ? populatedTransaction.toObject() : populatedTransaction;
+                const { _id, walletId, categoryId, __v, ...rest } = src;
+                return {
+                    ...rest,
+                    id: _id && _id.toString ? _id.toString() : String(_id),
+                    walletId: walletId && walletId._id ? { ...walletId, id: walletId._id.toString(), _id: undefined } : walletId,
+                    categoryId: categoryId && categoryId._id ? { ...categoryId, id: categoryId._id.toString(), _id: undefined } : categoryId
+                };
+            })();
             return res.status(201).json({
                 message: 'Tạo giao dịch thành công',
                 data: {
-                    transaction: populatedTransaction,
+                    transaction: normalizedTransaction,
                     budgetWarnings: budgetWarnings ? {
                         count: budgetWarnings.length,
                         hasError: budgetWarnings.some(w => w.level === 'error'),
                         hasCritical: budgetWarnings.some(w => w.level === 'critical'),
                         warnings: budgetWarnings
                     } : null,
+                    lowBalanceWarning,
                     walletInfo: {
                         id: wallet._id,
                         name: wallet.name,
@@ -160,11 +166,20 @@ export const createTransaction = async (req, res) => {
             const populatedTransaction = await Transaction.findById(transaction._id)
                 .populate('categoryId', 'name')
                 .populate('walletId', 'name balance scope type icon');
-
+            const normalizedTransaction = (() => {
+                const src = typeof populatedTransaction.toObject === 'function' ? populatedTransaction.toObject() : populatedTransaction;
+                const { _id, walletId, categoryId, __v, ...rest } = src;
+                return {
+                    ...rest,
+                    id: _id && _id.toString ? _id.toString() : String(_id),
+                    walletId: walletId && walletId._id ? { ...walletId, id: walletId._id.toString(), _id: undefined } : walletId,
+                    categoryId: categoryId && categoryId._id ? { ...categoryId, id: categoryId._id.toString(), _id: undefined } : categoryId
+                };
+            })();
             return res.status(201).json({
                 message: 'Tạo giao dịch thành công',
                 data: {
-                    transaction: populatedTransaction,
+                    transaction: normalizedTransaction,
                     walletInfo: {
                         id: wallet._id,
                         name: wallet.name,
@@ -239,9 +254,12 @@ export const updateTransaction = async (req, res) => {
         if (transaction.walletId) {
             newWallet = await Wallet.findById(transaction.walletId);
 
-            // Nếu không tìm thấy wallet và là income, tạo mặc định
-            if (!newWallet && transaction.type === 'income') {
-                newWallet = await getUserDefaultWallet(req.userId);
+            if (!newWallet) {
+                if (transaction.type === 'income') {
+                    newWallet = await getOrCreateDefaultWallet(req.userId);
+                } else if (transaction.type === 'expense') {
+                    newWallet = await getOrCreateDefaultExpenseWallet(req.userId);
+                }
                 if (newWallet) {
                     transaction.walletId = newWallet._id;
                     await transaction.save();
@@ -434,7 +452,7 @@ export const getTransactions = async (req, res) => {
         const [transactions, total] = await Promise.all([
             Transaction.find(match)
                 .populate('categoryId', 'name')
-                .populate('userId', 'username avatar')
+                .populate('userId', 'username')
                 .sort({ date: -1 })
                 .skip(skip)
                 .limit(limit),

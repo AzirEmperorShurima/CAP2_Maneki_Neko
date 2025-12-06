@@ -20,7 +20,7 @@ const walletSchema = new mongoose.Schema({
     },
     scope: {
         type: String,
-        enum: ['personal', 'family', 'default_receive', 'default_savings', 'default_debt'],
+        enum: ['personal', 'family', 'default_receive', 'default_savings', 'default_debt', 'default_expense'],
         default: 'personal',
         required: true
     }, // Phạm vi ví: cá nhân, gia đình, hoặc system wallet
@@ -98,6 +98,12 @@ walletSchema.virtual('walletCategory').get(function () {
 // Statics - Tạo hoặc lấy ví mặc định
 walletSchema.statics.getOrCreateDefaultWallet = async function (userId, scope, familyId = null) {
     const walletConfig = {
+        'default_expense': {
+            name: 'Ví Chi Tiền Mặc Định',
+            description: 'Ví tự động chi tiền cá nhân',
+            icon: '💸',
+            type: 'Chi tiêu'
+        },
         'default_receive': {
             name: 'Ví Nhận Tiền Mặc Định',
             description: 'Ví tự động nhận tiền từ gia đình',

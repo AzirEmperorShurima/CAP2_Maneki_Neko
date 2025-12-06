@@ -72,17 +72,17 @@ export const getCategories = async (req, res) => {
     try {
         const { error, value } = validateGetCategoriesQuery(req.query);
         if (error) {
-            return res.status(400).json({ 
-                error: 'Invalid query', 
-                details: error.details.map(d => ({ 
-                    field: d.path.join('.'), 
-                    message: d.message 
-                })) 
+            return res.status(400).json({
+                error: 'Invalid query',
+                details: error.details.map(d => ({
+                    field: d.path.join('.'),
+                    message: d.message
+                }))
             });
         }
         const { type } = value;
         const _user = await user.findById(req.userId).lean();
-        
+
         if (!_user) {
             return res.status(404).json({ error: 'Không tìm thấy người dùng' });
         }
@@ -92,7 +92,7 @@ export const getCategories = async (req, res) => {
             { scope: 'system', isDefault: true },
             { scope: 'personal', userId: _user._id }
         ];
-        
+
         if (_user.familyId) {
             orConditions.push({ scope: 'family', familyId: _user.familyId });
         }
@@ -102,19 +102,23 @@ export const getCategories = async (req, res) => {
             match.type = type;
         }
 
-        console.log('Query match:', JSON.stringify(match, null, 2));
-        console.log('User info:', { userId: _user._id, familyId: _user.familyId });
-
         const categories = await category.find(match)
             .select('_id name type scope userId familyId isDefault')
             .sort({ scope: 1, name: 1 })
             .lean();
+        const normalizedCategories = categories.map(cat => {
+            const { _id, ...rest } = cat;
+            return {
+                id: _id.toString(),     
+                ...rest,
+                userId: cat.userId?.toString() || "",
+                familyId: cat.familyId?.toString() || ""
+            };
+        });
 
-        console.log('Found categories:', categories.length);
-
-        res.json({ 
-            message: 'Lấy danh mục thành công', 
-            data: categories 
+        res.json({
+            message: 'Lấy danh mục thành công',
+            data: normalizedCategories
         });
     } catch (err) {
         console.error('getCategories error:', err);
