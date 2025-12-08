@@ -327,6 +327,34 @@ export const updateWallet = async (req, res) => {
   }
 };
 
+export const addAmountToWallet = async (req, res) => {
+  try {
+    const { id, amount } = req.body;
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ error: 'Số tiền phải lớn hơn 0' });
+    }
+    const wallet = await Wallet.findById(id);
+    if (!wallet) {
+      return res.status(404).json({ error: 'Không tìm thấy ví' });
+    }
+    // Chỉ owner mới có thể cập nhật
+    if (!wallet.userId.equals(req.userId)) {
+      return res.status(403).json({ error: 'Chỉ chủ ví mới có thể cập nhật' });
+    }
+    wallet.balance += amount;
+    await wallet.save();
+    res.json({
+      message: 'Cập nhật ví thành công',
+      data: {
+        wallet
+      }
+    });
+  } catch (error) {
+    console.error('Lỗi cập nhật ví:', error);
+    res.status(500).json({ error: 'Lỗi server' });
+  }
+};
+
 // ===== XÓA VÍ =====
 export const deleteWallet = async (req, res) => {
   const session = await mongoose.startSession();
