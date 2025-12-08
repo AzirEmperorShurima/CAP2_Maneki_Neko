@@ -1,8 +1,9 @@
 import app from "./app.js";
 import os from "os";
+import { createHealthCheckRoute, initKeepAliveCron } from "./src/services/self_ping.js";
 
 const port = app.get("port");
-
+createHealthCheckRoute(app);
 app.listen(port, () => {
   const env = process.env.NODE_ENV || "development";
   const pid = process.pid;
@@ -29,4 +30,5 @@ app.listen(port, () => {
     `${c.m}┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛${c.r}`
   ];
   console.log("\n" + lines.join("\n") + "\n");
+  initKeepAliveCron();
 });
