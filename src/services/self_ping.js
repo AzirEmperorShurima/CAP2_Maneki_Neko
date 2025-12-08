@@ -3,7 +3,7 @@ import https from "https";
 import http from "http";
 
 // URL server của bạn trên Render
-const SERVER_URL = process.env.SERVER_URL || "https://your-app.onrender.com";
+const SERVER_URL = process.env.APP_URL || "https://cap2-maneki-neko.onrender.com";
 
 // Parse URL để xác định protocol
 const isHttps = SERVER_URL.startsWith("https");

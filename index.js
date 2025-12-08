@@ -8,7 +8,7 @@ app.listen(port, () => {
   const env = process.env.NODE_ENV || "development";
   const pid = process.pid;
   const now = new Date().toLocaleString();
-  const localUrl = `http://localhost:${port}`;
+  const localUrl = `${process.env.APP_URL}:${port}`;
   const lanIP = (() => {
     const nets = os.networkInterfaces();
     for (const name of Object.keys(nets)) {
