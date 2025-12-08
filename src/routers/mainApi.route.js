@@ -23,6 +23,7 @@ apiRouter.get("/", (req, res) => {
         request_duration_time: Date.now() - req.startTime,
     })
 })
+
 // ============================================
 // non-Protected Routes
 // ============================================

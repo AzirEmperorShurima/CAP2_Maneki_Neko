@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { createFamily, generateInviteLink, sendInviteEmail, joinFamilyWeb, leaveFamily, getFamilyMembers, updateSharingSettings, addSharedResource, removeSharedResource, addFamilyMember, removeFamilyMember, getFamilySpendingSummary, getFamilyUserBreakdown, getFamilyTopCategories, getFamilyTopSpender } from "../controllers/familyController.js";
+import { createFamily, generateInviteLink, sendInviteEmail, joinFamilyWeb, leaveFamily, getFamilyMembers, updateSharingSettings, addSharedResource, removeSharedResource, addFamilyMember, removeFamilyMember, getFamilySpendingSummary, getFamilyUserBreakdown, getFamilyTopCategories, getFamilyTopSpender, dissolveFamily } from "../controllers/familyController.js";
 import { jwtAuth } from "../middlewares/auth.js";
 
 const familyRouter = Router();
@@ -19,11 +19,11 @@ familyRouter.post("/invite", sendInviteEmail);
 
 familyRouter.post("/leave", leaveFamily);
 familyRouter.get("/members", getFamilyMembers);
-familyRouter.put("/settings/sharing", updateSharingSettings);
-familyRouter.post("/shared-resources", addSharedResource);
-familyRouter.delete("/shared-resources", removeSharedResource);
-
-familyRouter.post("/members/add", addFamilyMember);
+// familyRouter.put("/settings/sharing", updateSharingSettings);
+// familyRouter.post("/shared-resources", addSharedResource);
+// familyRouter.delete("/shared-resources", removeSharedResource);
+familyRouter.post("/dissolve", dissolveFamily);
+// familyRouter.post("/members/add", addFamilyMember);
 familyRouter.post("/members/remove", removeFamilyMember);
 
 familyRouter.get("/analytics/summary", getFamilySpendingSummary);
