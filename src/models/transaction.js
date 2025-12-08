@@ -35,6 +35,10 @@ const transactionSchema = new mongoose.Schema({
         required: false,
         default: null
     },
+    expense_for: {
+        type: String,
+        default: "cá nhân"
+    },
     date: {
         type: Date,
         default: Date.now

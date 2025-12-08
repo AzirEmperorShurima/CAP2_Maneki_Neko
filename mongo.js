@@ -48,6 +48,24 @@ export const initializeCollections = async (models) => {
     );
 };
 
+// Hàm seed categories chỉ khi chưa có data
+const seedCategoriesIfEmpty = async () => {
+    try {
+        const count = await category.countDocuments();
+
+        if (count === 0) {
+            console.log("📦 Bảng categories trống, đang seed data mẫu...");
+            await category.insertMany(initialCats);
+            console.log(`✅ Đã seed ${initialCats.length} categories thành công!`);
+        } else {
+            console.log(`ℹ️ Bảng categories đã có ${count} bản ghi, bỏ qua seed data.`);
+        }
+    } catch (error) {
+        console.error("❌ Lỗi khi seed categories:", error);
+        throw error;
+    }
+};
+
 const closeExistingConnection = async () => {
     const { isConnected, isConnecting } = checkMongoConnection();
 
@@ -199,8 +217,9 @@ export const connectToDatabase = async () => {
         }
 
         await initializeCollections(models_list);
-        await category.deleteMany({});
-        await category.insertMany(initialCats);
+
+        // Seed categories chỉ khi bảng trống
+        await seedCategoriesIfEmpty();
 
         // Setup event handlers (chỉ setup 1 lần)
         setupConnectionHandlers();

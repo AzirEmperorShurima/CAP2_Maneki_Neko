@@ -49,7 +49,7 @@ export const createTransaction = async (req, res) => {
             });
         }
 
-        const { amount, type, date, description, isShared, categoryId, walletId } = value;
+        const { amount, type, expense_for, date, description, isShared, categoryId, walletId } = value;
 
         // Tìm hoặc tạo wallet
         let wallet = null;
@@ -111,6 +111,7 @@ export const createTransaction = async (req, res) => {
             walletId: wallet._id,
             amount,
             type,
+            expense_for: type === 'expense' ? expense_for : 'cá nhân',
             date: date || new Date(),
             description: description || '',
             isShared: isShared || false,
