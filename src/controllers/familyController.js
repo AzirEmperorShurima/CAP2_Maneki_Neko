@@ -1,11 +1,14 @@
 import Family from '../models/family.js';
 import User from '../models/user.js';
+import Transaction from '../models/transaction.js';
+import Category from '../models/category.js';
 import { sendFamilyInviteEmail } from '../services/mail/sendMailService.js';
 import { themedPage } from '../utils/webTheme.js';
 import { StatusCodes } from 'http-status-codes';
 import dayjs from 'dayjs';
 import crypto from 'crypto';
 import PushNotificationService from '../services/pushNotificationService.js';
+import { sendFamilyInviteNotification } from '../utils/notificationHelper.js';
 
 const generateInviteCode = async (length = 8) => {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -155,23 +158,19 @@ export const sendInviteEmail = async (req, res) => {
                 webJoinLink,
                 deepLink,
                 userExists: userExistsBool,
-            }).catch(() => { });
+            }).catch(() => {
+                console.error('Error sending email:', error);
+            });
         });
 
-        if (userExistsBool && userExists.fcmTokens?.length > 0) {
-            const messageData = {
-                familyCode: family.inviteCode,
-                email: email,
-                type: 'family_invite'
-            };
-
+        if (userExistsBool) {
             setImmediate(async () => {
                 try {
-                    await PushNotificationService.sendNotificationToUser(
-                        userExists,
-                        'Lời mời tham gia gia đình',
-                        `${adminName} đã mời bạn tham gia gia đình ${family.name}`,
-                        messageData
+                    await sendFamilyInviteNotification(
+                        userExists._id,
+                        family.name,
+                        adminName,
+                        family._id.toString()
                     );
                 } catch (error) {
                     console.error('Error sending push notification:', error);
@@ -515,6 +514,230 @@ export const removeSharedResource = async (req, res) => {
         res.json({ message: 'Đã xóa tài nguyên chia sẻ', data: removed });
     } catch (error) {
         console.error('Lỗi remove shared resource:', error);
+        res.status(500).json({ error: 'Lỗi server' });
+    }
+};
+
+export const addFamilyMember = async (req, res) => {
+    try {
+        const admin = await User.findById(req.userId);
+        if (!admin?.familyId || !admin.isFamilyAdmin) {
+            return res.status(403).json({ error: 'Chỉ admin mới có thể thêm thành viên' });
+        }
+        const { email, userId } = req.body;
+        let targetUser = null;
+        if (userId) {
+            targetUser = await User.findById(userId);
+        } else if (email) {
+            targetUser = await User.findOne({ email });
+        } else {
+            return res.status(400).json({ error: 'Cần cung cấp email hoặc userId' });
+        }
+        if (!targetUser) {
+            return res.status(404).json({ error: 'Không tìm thấy người dùng' });
+        }
+        const family = await Family.findById(admin.familyId);
+        if (!family) {
+            return res.status(404).json({ error: 'Không tìm thấy gia đình' });
+        }
+        if (targetUser.familyId && targetUser.familyId.toString() !== family._id.toString()) {
+            return res.status(400).json({ error: 'User đang thuộc gia đình khác' });
+        }
+        if (family.isMember(targetUser._id)) {
+            return res.status(400).json({ error: 'Đã là thành viên' });
+        }
+        family.addMember(targetUser._id);
+        await family.save();
+        targetUser.familyId = family._id;
+        targetUser.isFamilyAdmin = false;
+        await targetUser.save();
+        const added = await User.findById(targetUser._id).select('username email avatar');
+        const normalized = { id: added._id.toString(), username: added.username, email: added.email, avatar: added.avatar };
+        res.json({ message: 'Đã thêm thành viên', data: normalized });
+    } catch (error) {
+        console.error('addFamilyMember error:', error);
+        res.status(500).json({ error: 'Lỗi server' });
+    }
+};
+
+export const removeFamilyMember = async (req, res) => {
+    try {
+        const admin = await User.findById(req.userId);
+        if (!admin?.familyId || !admin.isFamilyAdmin) {
+            return res.status(403).json({ error: 'Chỉ admin mới có thể xóa thành viên' });
+        }
+        const { userId } = req.body;
+        if (!userId) {
+            return res.status(400).json({ error: 'Cần cung cấp userId' });
+        }
+        const family = await Family.findById(admin.familyId);
+        if (!family) {
+            return res.status(404).json({ error: 'Không tìm thấy gia đình' });
+        }
+        if (!family.isMember(userId)) {
+            return res.status(404).json({ error: 'User không phải là thành viên' });
+        }
+        if (family.adminId.toString() === userId.toString()) {
+            return res.status(400).json({ error: 'Không thể xóa admin hiện tại' });
+        }
+        family.removeMember(userId);
+        await family.save();
+        await User.findByIdAndUpdate(userId, { familyId: null, isFamilyAdmin: false });
+        res.json({ message: 'Đã xóa thành viên' });
+    } catch (error) {
+        console.error('removeFamilyMember error:', error);
+        res.status(500).json({ error: 'Lỗi server' });
+    }
+};
+
+export const getFamilySpendingSummary = async (req, res) => {
+    try {
+        const user = await User.findById(req.userId);
+        if (!user?.familyId) {
+            return res.status(400).json({ error: 'Bạn chưa tham gia nhóm nào' });
+        }
+        const family = await Family.findById(user.familyId);
+        if (!family || !family.isMember(req.userId)) {
+            return res.status(403).json({ error: 'Không có quyền truy cập gia đình này' });
+        }
+        const { startDate, endDate } = req.query;
+        const match = { familyId: user.familyId, isShared: true };
+        if (startDate || endDate) {
+            match.date = {};
+            if (startDate) match.date.$gte = new Date(startDate);
+            if (endDate) match.date.$lte = new Date(endDate);
+        }
+        const totals = await Transaction.aggregate([
+            { $match: match },
+            { $group: { _id: '$type', total: { $sum: '$amount' }, count: { $sum: 1 } } }
+        ]);
+        const expByCategory = await Transaction.aggregate([
+            { $match: { ...match, type: 'expense' } },
+            { $group: { _id: '$categoryId', total: { $sum: '$amount' }, count: { $sum: 1 } } },
+            { $lookup: { from: 'categories', localField: '_id', foreignField: '_id', as: 'category' } },
+            { $unwind: { path: '$category', preserveNullAndEmptyArrays: true } },
+            { $project: { category: '$category.name', total: 1, count: 1 } },
+            { $sort: { total: -1 } }
+        ]);
+        const incByCategory = await Transaction.aggregate([
+            { $match: { ...match, type: 'income' } },
+            { $group: { _id: '$categoryId', total: { $sum: '$amount' }, count: { $sum: 1 } } },
+            { $lookup: { from: 'categories', localField: '_id', foreignField: '_id', as: 'category' } },
+            { $unwind: { path: '$category', preserveNullAndEmptyArrays: true } },
+            { $project: { category: '$category.name', total: 1, count: 1 } },
+            { $sort: { total: -1 } }
+        ]);
+        const totalExpense = totals.find(t => t._id === 'expense')?.total || 0;
+        const totalIncome = totals.find(t => t._id === 'income')?.total || 0;
+        res.json({
+            message: 'Lấy báo cáo tổng chi tiêu gia đình thành công',
+            data: {
+                totals: { expense: totalExpense, income: totalIncome },
+                expenseByCategory: expByCategory,
+                incomeByCategory: incByCategory
+            }
+        });
+    } catch (error) {
+        console.error('getFamilySpendingSummary error:', error);
+        res.status(500).json({ error: 'Lỗi server' });
+    }
+};
+
+export const getFamilyUserBreakdown = async (req, res) => {
+    try {
+        const user = await User.findById(req.userId);
+        if (!user?.familyId) {
+            return res.status(400).json({ error: 'Bạn chưa tham gia nhóm nào' });
+        }
+        const family = await Family.findById(user.familyId);
+        if (!family || !family.isMember(req.userId)) {
+            return res.status(403).json({ error: 'Không có quyền truy cập gia đình này' });
+        }
+        const { startDate, endDate } = req.query;
+        const match = { familyId: user.familyId, isShared: true, type: 'expense' };
+        if (startDate || endDate) {
+            match.date = {};
+            if (startDate) match.date.$gte = new Date(startDate);
+            if (endDate) match.date.$lte = new Date(endDate);
+        }
+        const breakdown = await Transaction.aggregate([
+            { $match: match },
+            { $group: { _id: '$userId', total: { $sum: '$amount' }, count: { $sum: 1 } } },
+            { $lookup: { from: 'users', localField: '_id', foreignField: '_id', as: 'user' } },
+            { $unwind: '$user' },
+            { $project: { userId: { $toString: '$user._id' }, username: '$user.username', email: '$user.email', total: 1, count: 1 } },
+            { $sort: { total: -1 } }
+        ]);
+        res.json({ message: 'Lấy phân tích theo thành viên thành công', data: breakdown });
+    } catch (error) {
+        console.error('getFamilyUserBreakdown error:', error);
+        res.status(500).json({ error: 'Lỗi server' });
+    }
+};
+
+export const getFamilyTopCategories = async (req, res) => {
+    try {
+        const user = await User.findById(req.userId);
+        if (!user?.familyId) {
+            return res.status(400).json({ error: 'Bạn chưa tham gia nhóm nào' });
+        }
+        const family = await Family.findById(user.familyId);
+        if (!family || !family.isMember(req.userId)) {
+            return res.status(403).json({ error: 'Không có quyền truy cập gia đình này' });
+        }
+        const { startDate, endDate, limit = '5' } = req.query;
+        const match = { familyId: user.familyId, isShared: true, type: 'expense' };
+        if (startDate || endDate) {
+            match.date = {};
+            if (startDate) match.date.$gte = new Date(startDate);
+            if (endDate) match.date.$lte = new Date(endDate);
+        }
+        const top = await Transaction.aggregate([
+            { $match: match },
+            { $group: { _id: '$categoryId', total: { $sum: '$amount' }, count: { $sum: 1 } } },
+            { $lookup: { from: 'categories', localField: '_id', foreignField: '_id', as: 'category' } },
+            { $unwind: { path: '$category', preserveNullAndEmptyArrays: true } },
+            { $project: { categoryId: { $cond: [{ $ifNull: ['$_id', false] }, { $toString: '$_id' }, null] }, category: '$category.name', total: 1, count: 1 } },
+            { $sort: { total: -1 } },
+            { $limit: parseInt(limit) }
+        ]);
+        res.json({ message: 'Lấy top chi tiêu theo danh mục thành công', data: top });
+    } catch (error) {
+        console.error('getFamilyTopCategories error:', error);
+        res.status(500).json({ error: 'Lỗi server' });
+    }
+};
+
+export const getFamilyTopSpender = async (req, res) => {
+    try {
+        const user = await User.findById(req.userId);
+        if (!user?.familyId) {
+            return res.status(400).json({ error: 'Bạn chưa tham gia nhóm nào' });
+        }
+        const family = await Family.findById(user.familyId);
+        if (!family || !family.isMember(req.userId)) {
+            return res.status(403).json({ error: 'Không có quyền truy cập gia đình này' });
+        }
+        const { startDate, endDate } = req.query;
+        const match = { familyId: user.familyId, isShared: true, type: 'expense' };
+        if (startDate || endDate) {
+            match.date = {};
+            if (startDate) match.date.$gte = new Date(startDate);
+            if (endDate) match.date.$lte = new Date(endDate);
+        }
+        const top = await Transaction.aggregate([
+            { $match: match },
+            { $group: { _id: '$userId', total: { $sum: '$amount' }, count: { $sum: 1 } } },
+            { $sort: { total: -1 } },
+            { $limit: 1 },
+            { $lookup: { from: 'users', localField: '_id', foreignField: '_id', as: 'user' } },
+            { $unwind: '$user' },
+            { $project: { userId: { $toString: '$user._id' }, username: '$user.username', email: '$user.email', total: 1, count: 1 } }
+        ]);
+        const result = top[0] || null;
+        res.json({ message: 'Lấy thành viên chi tiêu nhiều nhất thành công', data: result });
+    } catch (error) {
+        console.error('getFamilyTopSpender error:', error);
         res.status(500).json({ error: 'Lỗi server' });
     }
 };

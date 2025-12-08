@@ -22,7 +22,7 @@ export const register = async (req, res) => {
             });
         }
 
-        const { email, password, username } = value;
+        const { email, password, username, deviceId, fcmToken, platform } = value;
 
         // Kiểm tra email đã tồn tại
         const existingUser = await User.findOne({ email });
@@ -54,6 +54,11 @@ export const register = async (req, res) => {
             }
 
         });
+        if (fcmToken && deviceId && platform) {
+            setImmediate(async () => {
+                await registerFCMToken(newUser, { fcmToken, deviceId, platform });
+            });
+        }
     } catch (err) {
         console.error('Register error:', err);
 
@@ -131,11 +136,11 @@ export const login = async (req, res) => {
         });
 
         // Register FCM token (async)
-        // if (fcmToken && deviceId && platform) {
-        //     setImmediate(async () => {
-        //         await registerFCMToken(user, { fcmToken, deviceId, platform });
-        //     });
-        // }
+        if (fcmToken && deviceId && platform) {
+            setImmediate(async () => {
+                await registerFCMToken(user, { fcmToken, deviceId, platform });
+            });
+        }
 
     } catch (err) {
         console.error('Login error:', err);
@@ -157,9 +162,7 @@ export const verifyGoogleId = async (req, res) => {
             });
         }
 
-        const { idToken
-            // , deviceId, fcmToken, platform 
-        } = value;
+        const { idToken, deviceId, fcmToken, platform } = value;
 
         // Verify Google token
         const client = new OAuth2Client(googleAppClientId);
@@ -228,7 +231,7 @@ export const verifyGoogleId = async (req, res) => {
         //     refreshTokenValue = await renewRefreshToken(user._id, deviceId);
         // }
 
-         res.json({
+        res.json({
             message: 'Đăng nhập thành công',
             data: {
                 userId: user._id,
@@ -238,11 +241,11 @@ export const verifyGoogleId = async (req, res) => {
         });
 
         // Register FCM token (async)
-        // if (fcmToken && deviceId && platform) {
-        //     setImmediate(async () => {
-        //         await registerFCMToken(user, { fcmToken, deviceId, platform });
-        //     });
-        // }
+        if (fcmToken && deviceId && platform) {
+            setImmediate(async () => {
+                await registerFCMToken(user, { fcmToken, deviceId, platform });
+            });
+        }
 
     } catch (err) {
         console.error('Google auth error:', err);
@@ -253,29 +256,29 @@ export const verifyGoogleId = async (req, res) => {
 // ===== ĐĂNG XUẤT =====
 export const logout = async (req, res) => {
     try {
-        // const { deviceId } = req.body;
+        const { deviceId } = req.body;
 
-        // if (!deviceId) {
-        //     return res.status(400).json({
-        //         error: 'deviceId là bắt buộc để đăng xuất thiết bị'
-        //     });
-        // }
+        if (!deviceId) {
+            return res.status(400).json({
+                error: 'deviceId là bắt buộc để đăng xuất thiết bị'
+            });
+        }
 
-        // const result = await RefreshToken.updateMany(
-        //     {
-        //         userId: req.userId,
-        //         deviceId: deviceId,
-        //         isValid: true
-        //     },
-        //     { isValid: false }
-        // );
+        const result = await RefreshToken.updateMany(
+            {
+                userId: req.userId,
+                deviceId: deviceId,
+                isValid: true
+            },
+            { isValid: false }
+        );
 
-        // const message = result.modifiedCount === 0
-        //     ? 'Không tìm thấy phiên đăng nhập của thiết bị này'
-        //     : 'Đã đăng xuất thiết bị thành công';
+        const message = result.modifiedCount === 0
+            ? 'Không tìm thấy phiên đăng nhập của thiết bị này'
+            : 'Đã đăng xuất thiết bị thành công';
 
         res.json({
-            message: "Đã đăng xuất thiết bị thành công'"
+            message
         });
 
     } catch (error) {
@@ -283,41 +286,41 @@ export const logout = async (req, res) => {
         res.status(500).json({ error: 'Lỗi server khi đăng xuất' });
     }
 };
-export const unlinkGoogleAccount = async (req, res) => {
-    try {
-        const userId = req.userId;
+// export const unlinkGoogleAccount = async (req, res) => {
+//     try {
+//         const userId = req.userId;
 
-        const user = await User.findById(userId);
-        if (!user) {
-            return res.status(404).json({ error: 'Không tìm thấy tài khoản' });
-        }
+//         const user = await User.findById(userId);
+//         if (!user) {
+//             return res.status(404).json({ error: 'Không tìm thấy tài khoản' });
+//         }
 
-        if (!user.googleId) {
-            return res.status(400).json({
-                error: 'Tài khoản chưa được liên kết với Google'
-            });
-        }
+//         if (!user.googleId) {
+//             return res.status(400).json({
+//                 error: 'Tài khoản chưa được liên kết với Google'
+//             });
+//         }
 
-        // Phải có password mới cho phép unlink
-        if (!user.hasPassword()) {
-            return res.status(400).json({
-                error: 'Không thể hủy liên kết. Vui lòng đặt mật khẩu trước.'
-            });
-        }
+//         // Phải có password mới cho phép unlink
+//         if (!user.hasPassword()) {
+//             return res.status(400).json({
+//                 error: 'Không thể hủy liên kết. Vui lòng đặt mật khẩu trước.'
+//             });
+//         }
 
-        user.googleId = undefined;
-        user.authProvider = 'local';
-        await user.save();
+//         user.googleId = undefined;
+//         user.authProvider = 'local';
+//         await user.save();
 
-        res.json({
-            message: 'Đã hủy liên kết tài khoản Google thành công'
-        });
+//         res.json({
+//             message: 'Đã hủy liên kết tài khoản Google thành công'
+//         });
 
-    } catch (error) {
-        console.error('Lỗi khi hủy liên kết tài khoản Google:', error);
-        res.status(500).json({ error: 'Không thể hủy liên kết tài khoản Google' });
-    }
-};
+//     } catch (error) {
+//         console.error('Lỗi khi hủy liên kết tài khoản Google:', error);
+//         res.status(500).json({ error: 'Không thể hủy liên kết tài khoản Google' });
+//     }
+// };
 
 // ===== XÓA USER =====
 export const deleteUser = async (req, res) => {
