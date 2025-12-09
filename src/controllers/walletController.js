@@ -252,10 +252,60 @@ export const getWalletById = async (req, res) => {
 
     const ownerId = wallet?.userId && wallet.userId._id ? wallet.userId._id : wallet.userId;
     const isOwner = String(ownerId) === String(req.userId);
+
+    const plain = typeof wallet.toObject === 'function' ? wallet.toObject() : wallet;
+    const normalizedWallet = {
+      id: plain._id,
+      name: plain.name || '',
+      scope: plain.scope || '',
+      type: plain.type || '',
+      balance: plain.balance ?? 0,
+      isActive: !!plain.isActive,
+      isShared: !!plain.isShared,
+      isDefault: !!plain.isDefault,
+      isSystemWallet: !!plain.isSystemWallet,
+      canDelete: !!plain.canDelete,
+      description: plain.description || '',
+      icon: plain.icon || '',
+      details: {
+        bankName: plain.details?.bankName || '',
+        accountNumber: plain.details?.accountNumber || '',
+        cardNumber: plain.details?.cardNumber || ''
+      },
+      family: plain.familyId ? {
+        id: plain.familyId._id,
+        name: plain.familyId.name || ''
+      } : {
+        id: '',
+        name: ''
+      },
+      owner: plain.userId ? {
+        id: plain.userId._id || plain.userId,
+        username: plain.userId.username || '',
+        email: plain.userId.email || ''
+      } : {
+        id: '',
+        username: '',
+        email: ''
+      },
+      accessControl: {
+        canView: Array.isArray(plain.accessControl?.canView) ? plain.accessControl.canView.map(u => ({
+          id: u?._id || u,
+          username: u?.username || '',
+          email: u?.email || ''
+        })) : [],
+        canTransact: Array.isArray(plain.accessControl?.canTransact) ? plain.accessControl.canTransact.map(u => ({
+          id: u?._id || u,
+          username: u?.username || '',
+          email: u?.email || ''
+        })) : []
+      }
+    };
+
     res.json({
       message: 'Lấy thông tin ví thành công',
       data: {
-        wallet,
+        wallet: normalizedWallet,
         permissions: {
           canView: true,
           canTransact: wallet.canUserTransact(req.userId),

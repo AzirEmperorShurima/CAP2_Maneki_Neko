@@ -149,7 +149,10 @@ export const geminiChatController = async (req, res) => {
 
       transaction = {
         amount: trans.amount,
-        category: category.name,
+        category: {
+          id: category._id,
+          name: category.name,
+        },
         type: trans.type,
         confidence: 1.0,
       };

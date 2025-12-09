@@ -444,7 +444,33 @@ export const getTransactionById = async (req, res) => {
             return res.status(404).json({ error: 'Không tìm thấy giao dịch' });
         }
 
-        res.json({ message: 'Lấy giao dịch thành công', data: transaction });
+        const plain = typeof transaction.toObject === 'function' ? transaction.toObject() : transaction;
+        const normalized = {
+            id: plain._id,
+            amount: plain.amount,
+            type: plain.type,
+            date: plain.date,
+            description: plain.description || '',
+            isShared: !!plain.isShared,
+            category: plain.categoryId ? {
+                id: plain.categoryId._id,
+                name: plain.categoryId.name || ''
+            } : {
+                id: '',
+                name: ''
+            },
+            wallet: plain.walletId ? {
+                id: plain.walletId._id,
+                name: plain.walletId.name || '',
+                balance: plain.walletId.balance ?? 0
+            } : {
+                id: '',
+                name: '',
+                balance: 0
+            }
+        };
+
+        res.json({ message: 'Lấy giao dịch thành công', data: normalized });
     } catch (err) {
         console.error('Get transaction by ID error:', err);
         res.status(500).json({ error: 'Lỗi server' });
