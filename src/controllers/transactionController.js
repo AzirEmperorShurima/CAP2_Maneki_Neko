@@ -104,14 +104,19 @@ export const createTransaction = async (req, res) => {
                 };
             }
         }
-
+        let expense_for_type = ""
+        if (type === 'expense') {
+            expense_for_type = expense_for || 'cá nhân';
+        } else if (type === 'income') {
+            expense_for_type = "";
+        }
         // Tạo transaction
         const transaction = new Transaction({
             userId: req.userId,
             walletId: wallet._id,
             amount,
             type,
-            expense_for: type === 'expense' ? expense_for : 'cá nhân',
+            expense_for: expense_for_type,
             date: date || new Date(),
             description: description || '',
             isShared: isShared || false,
@@ -240,9 +245,7 @@ export const updateTransaction = async (req, res) => {
             value[field] !== undefined && value[field] !== transaction[field]
         );
 
-        // === FAST PATH: Chỉ update các trường phụ ===
         if (!hasCriticalChanges) {
-            // Cập nhật trực tiếp các trường phụ
             secondaryFields.forEach(field => {
                 if (value[field] !== undefined) {
                     transaction[field] = value[field];
@@ -262,10 +265,8 @@ export const updateTransaction = async (req, res) => {
             });
         }
 
-        // === SLOW PATH: Có thay đổi amount/type/wallet - cần xử lý phức tạp ===
         const { amount, type, walletId } = value;
 
-        // Lưu giá trị cũ
         const oldAmount = transaction.amount;
         const oldType = transaction.type;
         const oldWalletId = transaction.walletId;
@@ -526,6 +527,7 @@ export const getTransactions = async (req, res) => {
                 id: plain._id,
                 amount: plain.amount,
                 type: plain.type,
+                expense_for: plain.expense_for || '',
                 date: plain.date,
                 description: plain.description || '',
                 isShared: plain.isShared || false,
