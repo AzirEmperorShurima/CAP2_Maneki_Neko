@@ -1,5 +1,6 @@
 import Transaction from "../models/transaction.js";
 import Wallet from "../models/wallet.js";
+import Category from "../models/category.js";
 
 class AnalyticsController {
     /**
@@ -11,28 +12,32 @@ class AnalyticsController {
             const userId = req.userId;
             const { startDate, endDate, walletId } = req.query;
 
+            // ----- FILTER TRANSACTION CÁ NHÂN -----
             const dateFilter = {
                 userId,
-                isDeleted: { $ne: true }
+                // isDeleted: { $ne: true },
+                // $or: [
+                //     { isShared: false },          // giao dịch cá nhân
+                //     { isShared: { $exists: false } } // giao dịch không có field isShared
+                // ]
             };
 
+            // ----- FILTER DATE -----
             if (startDate || endDate) {
                 dateFilter.date = {};
                 if (startDate) dateFilter.date.$gte = new Date(startDate);
                 if (endDate) dateFilter.date.$lte = new Date(endDate);
-            } else {
-                dateFilter.date = new Date(new Date().setMonth(new Date().getMonth() - 1));
-                dateFilter.date = new Date();
             }
 
+            // ----- FILTER WALLET -----
             if (walletId) {
-                dateFilter.walletId = walletId;
+                dateFilter.walletId = new mongoose.Types.ObjectId(walletId);
             }
 
-            // Lấy tổng thu nhập và chi tiêu
+            // ----- TÍNH THU NHẬP & CHI TIÊU -----
             const [incomeResult, expenseResult] = await Promise.all([
                 Transaction.aggregate([
-                    { $match: { ...dateFilter, type: 'income' } },
+                    { $match: { userId: req.userId, type: 'income' } },
                     { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } }
                 ]),
                 Transaction.aggregate([
@@ -40,17 +45,16 @@ class AnalyticsController {
                     { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } }
                 ])
             ]);
+            console.log(req.userId, incomeResult, expenseResult);
 
             const totalIncome = incomeResult[0]?.total || 0;
             const totalExpense = expenseResult[0]?.total || 0;
-            const incomeCount = incomeResult[0]?.count || 0;
-            const expenseCount = expenseResult[0]?.count || 0;
 
-            // Lấy tổng số dư ví cá nhân
+            // ----- LẤY VÍ CÁ NHÂN -----
             const wallets = await Wallet.find({
                 userId,
-                isActive: true,
-                isShared: false // CHỈ VÍ CÁ NHÂN
+                isShared: false, // mọi ví không share đều là ví cá nhân
+                isActive: true
             });
 
             const totalBalance = wallets.reduce((sum, w) => sum + w.balance, 0);
@@ -60,11 +64,11 @@ class AnalyticsController {
                 data: {
                     income: {
                         total: totalIncome,
-                        count: incomeCount
+                        count: incomeResult[0]?.count || 0
                     },
                     expense: {
                         total: totalExpense,
-                        count: expenseCount
+                        count: expenseResult[0]?.count || 0
                     },
                     netBalance: totalIncome - totalExpense,
                     totalWalletBalance: totalBalance,
@@ -75,6 +79,7 @@ class AnalyticsController {
                     }
                 }
             });
+
         } catch (error) {
             console.error('Error in getPersonalOverview:', error);
             return res.status(500).json({
@@ -83,6 +88,7 @@ class AnalyticsController {
             });
         }
     }
+
 
     /**
      * GET /api/analytics/personal/spending-trend
@@ -93,19 +99,36 @@ class AnalyticsController {
             const userId = req.userId;
             const { startDate, endDate, groupBy = 'day', walletId } = req.query;
 
+            // Lấy ví cá nhân
+            const personalWallets = await Wallet.find({
+                userId,
+                isActive: true,
+                isShared: false,
+                scope: { $in: ['personal', 'default_receive', 'default_savings', 'default_debt', 'default_expense'] }
+            }).select('_id');
+
+            const personalWalletIds = personalWallets.map(w => w._id);
+
             const matchFilter = {
                 userId,
+                walletId: { $in: personalWalletIds },
                 isDeleted: { $ne: true }
             };
+
+            if (walletId) {
+                const isPersonalWallet = personalWalletIds.some(id => id.toString() === walletId);
+                if (!isPersonalWallet) {
+                    return res.status(400).json({
+                        error: 'Ví được chọn không phải là ví cá nhân'
+                    });
+                }
+                matchFilter.walletId = walletId;
+            }
 
             if (startDate || endDate) {
                 matchFilter.date = {};
                 if (startDate) matchFilter.date.$gte = new Date(startDate);
                 if (endDate) matchFilter.date.$lte = new Date(endDate);
-            }
-
-            if (walletId) {
-                matchFilter.walletId = walletId;
             }
 
             // Xác định format groupBy
@@ -183,7 +206,22 @@ class AnalyticsController {
             const userId = req.userId;
             const { startDate, endDate } = req.query;
 
-            const dateFilter = { userId, isDeleted: { $ne: true } };
+            // Lấy ví cá nhân
+            const personalWallets = await Wallet.find({
+                userId,
+                isActive: true,
+                isShared: false,
+                scope: { $in: ['personal', 'default_receive', 'default_savings', 'default_debt', 'default_expense'] }
+            }).lean();
+
+            const personalWalletIds = personalWallets.map(w => w._id);
+
+            const dateFilter = {
+                userId,
+                walletId: { $in: personalWalletIds },
+                isDeleted: { $ne: true }
+            };
+
             if (startDate || endDate) {
                 dateFilter.date = {};
                 if (startDate) dateFilter.date.$gte = new Date(startDate);
@@ -205,21 +243,14 @@ class AnalyticsController {
                 }
             ]);
 
-            // Lấy thông tin wallet
-            const walletIds = [...new Set(walletStats.map(s => s._id.walletId).filter(Boolean))];
-            const wallets = await Wallet.find({
-                _id: { $in: walletIds },
-                userId,
-                isShared: false // CHỈ VÍ CÁ NHÂN
-            }).lean();
-
             // Map data
             const walletMap = {};
-            wallets.forEach(w => {
+            personalWallets.forEach(w => {
                 walletMap[w._id.toString()] = {
                     walletId: w._id,
                     walletName: w.name,
                     walletType: w.type,
+                    walletScope: w.scope,
                     walletIcon: w.icon,
                     currentBalance: w.balance,
                     income: 0,
@@ -271,15 +302,18 @@ class AnalyticsController {
             const { walletId } = req.params;
             const { startDate, endDate } = req.query;
 
-            // Kiểm tra wallet có thuộc user không
+            // Kiểm tra wallet có thuộc user và là ví cá nhân không
             const wallet = await Wallet.findOne({
                 _id: walletId,
                 userId,
-                isShared: false
+                isShared: false,
+                scope: { $in: ['personal', 'default_receive', 'default_savings', 'default_debt', 'default_expense'] }
             });
 
             if (!wallet) {
-                return res.status(404).json({ error: 'Không tìm thấy ví hoặc không có quyền truy cập' });
+                return res.status(404).json({
+                    error: 'Không tìm thấy ví cá nhân hoặc không có quyền truy cập'
+                });
             }
 
             const dateFilter = {
@@ -326,15 +360,16 @@ class AnalyticsController {
             const categoryMap = {};
             categories.forEach(c => categoryMap[c._id.toString()] = c.name);
 
+            const totalExpenseAmount = expenseResult[0]?.total || 0;
             const formattedCategories = categoryBreakdown.map(c => ({
                 categoryId: c._id,
                 categoryName: c._id ? categoryMap[c._id.toString()] || 'Không xác định' : 'Không phân loại',
                 total: c.total,
                 count: c.count,
-                percentage: expenseResult[0]?.total ? ((c.total / expenseResult[0].total) * 100).toFixed(2) : 0
+                percentage: totalExpenseAmount > 0 ? ((c.total / totalExpenseAmount) * 100).toFixed(2) : 0
             }));
 
-            // 3. Xu hướng theo ngày (7 ngày gần nhất)
+            // 3. Xu hướng theo ngày
             const dailyTrend = await Transaction.aggregate([
                 { $match: dateFilter },
                 {
@@ -365,15 +400,16 @@ class AnalyticsController {
                         id: wallet._id,
                         name: wallet.name,
                         type: wallet.type,
+                        scope: wallet.scope,
                         icon: wallet.icon,
                         currentBalance: wallet.balance
                     },
                     summary: {
                         totalIncome: incomeResult[0]?.total || 0,
-                        totalExpense: expenseResult[0]?.total || 0,
+                        totalExpense: totalExpenseAmount,
                         incomeCount: incomeResult[0]?.count || 0,
                         expenseCount: expenseResult[0]?.count || 0,
-                        net: (incomeResult[0]?.total || 0) - (expenseResult[0]?.total || 0)
+                        net: (incomeResult[0]?.total || 0) - totalExpenseAmount
                     },
                     expenseByCategory: formattedCategories,
                     dailyTrend: Object.values(dailyMap).sort((a, b) => b.date.localeCompare(a.date))
@@ -397,9 +433,20 @@ class AnalyticsController {
             const userId = req.userId;
             const { startDate, endDate, type = 'expense', limit = '10' } = req.query;
 
+            // Lấy ví cá nhân
+            const personalWallets = await Wallet.find({
+                userId,
+                isActive: true,
+                isShared: false,
+                scope: { $in: ['personal', 'default_receive', 'default_savings', 'default_debt', 'default_expense'] }
+            }).select('_id');
+
+            const personalWalletIds = personalWallets.map(w => w._id);
+
             const matchFilter = {
                 userId,
                 type,
+                walletId: { $in: personalWalletIds },
                 isDeleted: { $ne: true }
             };
 
@@ -471,13 +518,33 @@ class AnalyticsController {
             const userId = req.userId;
             const { startDate, endDate, type = 'expense', limit = '10', walletId } = req.query;
 
+            // Lấy ví cá nhân
+            const personalWallets = await Wallet.find({
+                userId,
+                isActive: true,
+                isShared: false,
+                scope: { $in: ['personal', 'default_receive', 'default_savings', 'default_debt', 'default_expense'] }
+            }).select('_id');
+
+            const personalWalletIds = personalWallets.map(w => w._id);
+
             const matchFilter = {
                 userId,
+                walletId: { $in: personalWalletIds },
                 isDeleted: { $ne: true }
             };
 
             if (type) matchFilter.type = type;
-            if (walletId) matchFilter.walletId = walletId;
+
+            if (walletId) {
+                const isPersonalWallet = personalWalletIds.some(id => id.toString() === walletId);
+                if (!isPersonalWallet) {
+                    return res.status(400).json({
+                        error: 'Ví được chọn không phải là ví cá nhân'
+                    });
+                }
+                matchFilter.walletId = walletId;
+            }
 
             if (startDate || endDate) {
                 matchFilter.date = {};
@@ -489,7 +556,7 @@ class AnalyticsController {
                 .sort({ amount: -1 })
                 .limit(parseInt(limit))
                 .populate('categoryId', 'name')
-                .populate('walletId', 'name icon')
+                .populate('walletId', 'name icon scope')
                 .lean();
 
             return res.status(200).json({
@@ -518,6 +585,16 @@ class AnalyticsController {
                 return res.status(400).json({ error: 'currentStart và currentEnd là bắt buộc' });
             }
 
+            // Lấy ví cá nhân
+            const personalWallets = await Wallet.find({
+                userId,
+                isActive: true,
+                isShared: false,
+                scope: { $in: ['personal', 'default_receive', 'default_savings', 'default_debt', 'default_expense'] }
+            }).select('_id');
+
+            const personalWalletIds = personalWallets.map(w => w._id);
+
             const current_start = new Date(currentStart);
             const current_end = new Date(currentEnd);
             const periodLength = current_end - current_start;
@@ -525,15 +602,20 @@ class AnalyticsController {
             const previous_end = new Date(current_start.getTime() - 1);
             const previous_start = new Date(previous_end.getTime() - periodLength);
 
+            const baseFilter = {
+                userId,
+                walletId: { $in: personalWalletIds },
+                isDeleted: { $ne: true }
+            };
+
             // Current period
             const [currentIncome, currentExpense] = await Promise.all([
                 Transaction.aggregate([
                     {
                         $match: {
-                            userId,
+                            ...baseFilter,
                             type: 'income',
-                            date: { $gte: current_start, $lte: current_end },
-                            isDeleted: { $ne: true }
+                            date: { $gte: current_start, $lte: current_end }
                         }
                     },
                     { $group: { _id: null, total: { $sum: '$amount' } } }
@@ -541,10 +623,9 @@ class AnalyticsController {
                 Transaction.aggregate([
                     {
                         $match: {
-                            userId,
+                            ...baseFilter,
                             type: 'expense',
-                            date: { $gte: current_start, $lte: current_end },
-                            isDeleted: { $ne: true }
+                            date: { $gte: current_start, $lte: current_end }
                         }
                     },
                     { $group: { _id: null, total: { $sum: '$amount' } } }
@@ -556,10 +637,9 @@ class AnalyticsController {
                 Transaction.aggregate([
                     {
                         $match: {
-                            userId,
+                            ...baseFilter,
                             type: 'income',
-                            date: { $gte: previous_start, $lte: previous_end },
-                            isDeleted: { $ne: true }
+                            date: { $gte: previous_start, $lte: previous_end }
                         }
                     },
                     { $group: { _id: null, total: { $sum: '$amount' } } }
@@ -567,10 +647,9 @@ class AnalyticsController {
                 Transaction.aggregate([
                     {
                         $match: {
-                            userId,
+                            ...baseFilter,
                             type: 'expense',
-                            date: { $gte: previous_start, $lte: previous_end },
-                            isDeleted: { $ne: true }
+                            date: { $gte: previous_start, $lte: previous_end }
                         }
                     },
                     { $group: { _id: null, total: { $sum: '$amount' } } }
@@ -636,9 +715,20 @@ class AnalyticsController {
             const userId = req.userId;
             const { startDate, endDate, type = 'expense' } = req.query;
 
+            // Lấy ví cá nhân
+            const personalWallets = await Wallet.find({
+                userId,
+                isActive: true,
+                isShared: false,
+                scope: { $in: ['personal', 'default_receive', 'default_savings', 'default_debt', 'default_expense'] }
+            }).select('_id');
+
+            const personalWalletIds = personalWallets.map(w => w._id);
+
             const matchFilter = {
                 userId,
                 type,
+                walletId: { $in: personalWalletIds },
                 isDeleted: { $ne: true }
             };
 

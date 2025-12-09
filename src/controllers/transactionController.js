@@ -512,6 +512,7 @@ export const getTransactions = async (req, res) => {
             Transaction.find(match)
                 .populate('categoryId', 'name')
                 .populate('userId', 'username')
+                .populate('walletId', 'name balance scope type icon')
                 .sort({ date: -1 })
                 .skip(skip)
                 .limit(limit),
@@ -539,7 +540,15 @@ export const getTransactions = async (req, res) => {
                     name: plain.categoryId.name,
                 } : {
                     name: 'Không xác định',
-                }
+                },
+                wallet: plain.walletId ? {
+                    id: plain.walletId._id,
+                    name: plain.walletId.name,
+                    balance: plain.walletId.balance,
+                    scope: plain.walletId.scope,
+                    type: plain.walletId.type,
+                    icon: plain.walletId.icon
+                } : null
             };
         });
 

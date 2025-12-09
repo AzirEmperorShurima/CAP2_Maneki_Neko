@@ -114,6 +114,7 @@ export const geminiChatController = async (req, res) => {
 
     let reply = '';
     let transaction = null;
+    let jokeMessage = null;
 
     // ==================================================================
     // 1. Tạo giao dịch
@@ -162,8 +163,7 @@ export const geminiChatController = async (req, res) => {
 
       const jokePool = data.type === 'income' ? chat_joke.income : chat_joke.bigSpending;
       if (Array.isArray(jokePool) && jokePool.length) {
-        const joke = jokePool[Math.floor(Math.random() * jokePool.length)];
-        reply += `\n${joke}`;
+        jokeMessage = jokePool[Math.floor(Math.random() * jokePool.length)];
       }
 
       // Cập nhật tiến độ goal nếu giao dịch là thu nhập và có walletId
@@ -378,6 +378,7 @@ export const geminiChatController = async (req, res) => {
       message: reply.trim(),
       data: {
         transaction: transaction || null,
+        jokeMessage
       }
     });
 

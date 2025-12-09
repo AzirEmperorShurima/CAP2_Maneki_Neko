@@ -94,5 +94,6 @@ transactionSchema.index({ userId: 1, categoryId: 1, date: -1 });
 transactionSchema.index({ userId: 1, type: 1, date: -1 });
 transactionSchema.index({ walletId: 1 });
 transactionSchema.index({ date: 1 });
+transactionSchema.index({ userId: 1, isDeleted: 1, date: -1 });
 
 export default mongoose.model("Transaction", transactionSchema);
