@@ -52,6 +52,14 @@ const transactionSchema = new mongoose.Schema({
         required: true,
         default: "expense"
     },
+    isDeleted: {
+        type: Boolean,
+        default: false
+    },
+    deletedAt: {
+        type: Date,
+        default: null
+    },
     paymentMethod: {
         type: String,
         enum: ["cash", "card", "transfer"],
@@ -81,11 +89,10 @@ const transactionSchema = new mongoose.Schema({
     },
 }, { timestamps: true });
 
-// Indexes để tối ưu truy vấn
 transactionSchema.index({ userId: 1, date: -1 });
 transactionSchema.index({ userId: 1, categoryId: 1, date: -1 });
 transactionSchema.index({ userId: 1, type: 1, date: -1 });
-transactionSchema.index({ walletId: 1 }); // Index cho walletId
+transactionSchema.index({ walletId: 1 });
 transactionSchema.index({ date: 1 });
 
 export default mongoose.model("Transaction", transactionSchema);

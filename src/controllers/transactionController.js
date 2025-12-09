@@ -1,7 +1,7 @@
 import Wallet from "../models/wallet.js";
 import Transaction from "../models/transaction.js";
 import user from "../models/user.js";
-import { validateCreateTransaction } from "../validations/transaction.js";
+import { validateCreateTransaction, validateUpdateTransaction, validateTransactionIdParam } from "../validations/transaction.js";
 
 import * as transactionService from '../services/transactions/analytics/transactionAlalytics.js';
 import { checkBudgetWarning, updateBudgetSpentAmounts } from "../utils/budget.js";
@@ -199,8 +199,22 @@ export const createTransaction = async (req, res) => {
 // update a transaction
 export const updateTransaction = async (req, res) => {
     try {
-        const { transactionId } = req.params;
-        const { amount, type, date, description, isShared, categoryId, walletId } = req.body;
+        const { error: paramError, value: paramValue } = validateTransactionIdParam(req.params);
+        if (paramError) {
+            return res.status(400).json({
+                error: 'Invalid param',
+                details: paramError.details.map(d => ({ field: d.path.join('.'), message: d.message }))
+            });
+        }
+        const { transactionId } = paramValue;
+
+        const { error, value } = validateUpdateTransaction(req.body);
+        if (error) {
+            return res.status(400).json({
+                error: 'Invalid payload',
+                details: error.details.map(d => ({ field: d.path.join('.'), message: d.message }))
+            });
+        }
 
         // Tìm transaction
         const transaction = await Transaction.findOne({
@@ -211,6 +225,45 @@ export const updateTransaction = async (req, res) => {
         if (!transaction) {
             return res.status(404).json({ error: 'Không tìm thấy giao dịch' });
         }
+
+        // Phân loại các trường cần update
+        const criticalFields = ['amount', 'type', 'walletId'];
+        const secondaryFields = [
+            'date', 'description', 'isShared', 'categoryId',
+            'paymentMethod', 'expense_for', 'inputType',
+            'ocrText', 'voiceText', 'rawText', 'confidence',
+            'isAutoCategorized', 'receiptImage', 'currency'
+        ];
+
+        // Kiểm tra xem có thay đổi critical fields không
+        const hasCriticalChanges = criticalFields.some(field =>
+            value[field] !== undefined && value[field] !== transaction[field]
+        );
+
+        // === FAST PATH: Chỉ update các trường phụ ===
+        if (!hasCriticalChanges) {
+            // Cập nhật trực tiếp các trường phụ
+            secondaryFields.forEach(field => {
+                if (value[field] !== undefined) {
+                    transaction[field] = value[field];
+                }
+            });
+
+            await transaction.save();
+
+            // Populate và return
+            const populatedTransaction = await Transaction.findById(transaction._id)
+                .populate('categoryId', 'name')
+                .populate('walletId', 'name balance scope type icon');
+
+            return res.json({
+                message: 'Cập nhật giao dịch thành công',
+                data: populatedTransaction
+            });
+        }
+
+        // === SLOW PATH: Có thay đổi amount/type/wallet - cần xử lý phức tạp ===
+        const { amount, type, walletId } = value;
 
         // Lưu giá trị cũ
         const oldAmount = transaction.amount;
@@ -239,14 +292,18 @@ export const updateTransaction = async (req, res) => {
             await updateBudgetSpentAmounts(req.userId, restoreTransaction);
         }
 
-        // BƯỚC 3: Cập nhật thông tin transaction
+        // BƯỚC 3: Cập nhật TẤT CẢ các thông tin transaction
+        // Update critical fields
         if (amount !== undefined) transaction.amount = amount;
         if (type !== undefined) transaction.type = type;
-        if (date !== undefined) transaction.date = date;
-        if (description !== undefined) transaction.description = description;
-        if (isShared !== undefined) transaction.isShared = isShared;
-        if (categoryId !== undefined) transaction.categoryId = categoryId;
         if (walletId !== undefined) transaction.walletId = walletId;
+
+        // Update secondary fields
+        secondaryFields.forEach(field => {
+            if (value[field] !== undefined) {
+                transaction[field] = value[field];
+            }
+        });
 
         await transaction.save();
 
@@ -377,6 +434,7 @@ export const deleteTransaction = async (req, res) => {
 export const getTransactionById = async (req, res) => {
     try {
         const { transactionId } = req.params;
+        console.log(req.userId, transactionId, req.params);
         const transaction = await Transaction.findOne({ _id: transactionId, userId: req.userId })
             .populate('categoryId', 'name')
             .populate('walletId', 'name balance');
@@ -517,5 +575,137 @@ export const getTransactionChartData = async (req, res) => {
     } catch (error) {
         console.error('Lỗi lấy chart data:', error);
         res.status(500).json({ error: 'Lỗi server' });
+    }
+};
+
+export const softDeleteTransaction = async (req, res) => {
+    try {
+        const { error: paramError, value: paramValue } = validateTransactionIdParam(req.params);
+        if (paramError) {
+            return res.status(400).json({
+                error: 'Invalid param',
+                details: paramError.details.map(d => ({ field: d.path.join('.'), message: d.message }))
+            });
+        }
+        const { transactionId } = paramValue;
+
+        const transaction = await Transaction.findOne({
+            _id: transactionId,
+            userId: req.userId,
+            isDeleted: { $ne: true } // Chưa bị xóa
+        });
+
+        if (!transaction) {
+            return res.status(404).json({ error: 'Không tìm thấy giao dịch' });
+        }
+
+        // Refund wallet
+        if (transaction.walletId) {
+            const wallet = await Wallet.findById(transaction.walletId);
+            if (wallet) {
+                if (transaction.type === 'expense') {
+                    wallet.balance += transaction.amount;
+                } else if (transaction.type === 'income') {
+                    wallet.balance -= transaction.amount;
+                }
+                await wallet.save();
+            }
+        }
+
+        // Reverse budget
+        if (transaction.type === 'expense') {
+            const reverseTransaction = {
+                ...transaction.toObject(),
+                amount: -transaction.amount
+            };
+            await updateBudgetSpentAmounts(req.userId, reverseTransaction);
+        }
+
+        transaction.isDeleted = true;
+        transaction.deletedAt = new Date();
+        await transaction.save();
+
+        res.json({
+            message: 'Xóa giao dịch thành công (có thể khôi phục)',
+            data: {
+                id: transaction._id,
+                canRestore: true
+            }
+        });
+
+    } catch (err) {
+        console.error('Soft delete transaction error:', err);
+        res.status(500).json({
+            error: 'Lỗi server',
+            message: err.message
+        });
+    }
+};
+export const restoreTransaction = async (req, res) => {
+    try {
+        const { error: paramError, value: paramValue } = validateTransactionIdParam(req.params);
+        if (paramError) {
+            return res.status(400).json({
+                error: 'Invalid param',
+                details: paramError.details.map(d => ({ field: d.path.join('.'), message: d.message }))
+            });
+        }
+        const { transactionId } = paramValue;
+
+        const transaction = await Transaction.findOne({
+            _id: transactionId,
+            userId: req.userId,
+            isDeleted: true
+        });
+
+        if (!transaction) {
+            return res.status(404).json({ error: 'Không tìm thấy giao dịch đã xóa' });
+        }
+
+        // Áp dụng lại vào wallet
+        if (transaction.walletId) {
+            const wallet = await Wallet.findById(transaction.walletId);
+            if (wallet) {
+                if (transaction.type === 'expense') {
+                    if (wallet.balance < transaction.amount) {
+                        return res.status(400).json({
+                            error: 'Không đủ số dư để khôi phục giao dịch',
+                            currentBalance: wallet.balance,
+                            required: transaction.amount
+                        });
+                    }
+                    wallet.balance -= transaction.amount;
+                } else if (transaction.type === 'income') {
+                    wallet.balance += transaction.amount;
+                }
+                await wallet.save();
+            }
+        }
+
+        // Áp dụng lại vào budget
+        if (transaction.type === 'expense') {
+            await updateBudgetSpentAmounts(req.userId, transaction);
+        }
+
+        // Khôi phục
+        transaction.isDeleted = false;
+        transaction.deletedAt = null;
+        await transaction.save();
+
+        const populatedTransaction = await Transaction.findById(transaction._id)
+            .populate('categoryId', 'name')
+            .populate('walletId', 'name balance scope type icon');
+
+        res.json({
+            message: 'Khôi phục giao dịch thành công',
+            data: populatedTransaction
+        });
+
+    } catch (err) {
+        console.error('Restore transaction error:', err);
+        res.status(500).json({
+            error: 'Lỗi server',
+            message: err.message
+        });
     }
 };

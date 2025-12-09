@@ -8,6 +8,7 @@ import dayjs from 'dayjs';
 import 'dayjs/locale/vi.js';
 import { checkBudgetWarning } from '../utils/budget.js';
 import { SYSTEM_PROMPT } from '../utils/geminiChatPrompt.js';
+import { chat_joke } from '../utils/joke.js';
 
 dayjs.locale('vi');
 
@@ -158,6 +159,12 @@ export const geminiChatController = async (req, res) => {
       // Kiểm tra cảnh báo ngân sách
       const warning = checkBudgetWarning?.(req.userId, trans);
       if (warning) reply += `\n${warning}`;
+
+      const jokePool = data.type === 'income' ? chat_joke.income : chat_joke.bigSpending;
+      if (Array.isArray(jokePool) && jokePool.length) {
+        const joke = jokePool[Math.floor(Math.random() * jokePool.length)];
+        reply += `\n${joke}`;
+      }
 
       // Cập nhật tiến độ goal nếu giao dịch là thu nhập và có walletId
       if (trans.type === 'income') {
@@ -356,10 +363,6 @@ export const geminiChatController = async (req, res) => {
     else if (data.action === 'chat') {
       reply = data.reply;
     }
-
-    // ==================================================================
-    // 7. Không hiểu / không hỗ trợ
-    // ==================================================================
     else {
       reply = `${data.reply || 'Mình chưa hiểu yêu cầu này.'
         }\n\nBạn có thể thử:\n` +

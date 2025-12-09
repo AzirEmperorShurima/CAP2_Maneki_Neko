@@ -47,22 +47,7 @@ Các hành động có thể thực hiện:
   "wallet_name": "string"         // tên ví muốn liên kết với mục tiêu
 }
 
-6. Phân tích dữ liệu chi tiêu:
-{
-  "action": "analyze",
-  "type": "expense" | "income" | "all", // loại giao dịch cần phân tích
-  "period": "daily" | "weekly" | "monthly" | "yearly", // chu kỳ phân tích
-  "month": "YYYY-MM"                   // tháng cần phân tích (mặc định tháng hiện tại)
-}
-
-7. Xem báo cáo tổng quan:
-{
-  "action": "get_report",
-  "period": "daily" | "weekly" | "monthly",
-  "scope": "personal" | "family"       // phạm vi báo cáo
-}
-
-8. Các câu hỏi khác:
+6. Các câu hỏi khác:
 {
   "action": "chat",
   "reply": "string"                    // trả lời tự nhiên, cung cấp thông tin hoặc giải thích
