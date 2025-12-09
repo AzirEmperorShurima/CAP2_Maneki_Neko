@@ -1,43 +1,81 @@
+import mongoose from "mongoose";
 import Transaction from "../models/transaction.js";
 import Wallet from "../models/wallet.js";
 import Category from "../models/category.js";
 
 class AnalyticsController {
+    constructor() {
+        // Bind all methods to maintain 'this' context
+        this.getPersonalOverview = this.getPersonalOverview.bind(this);
+        this.getPersonalSpendingTrend = this.getPersonalSpendingTrend.bind(this);
+        this.getAnalyticsByWallet = this.getAnalyticsByWallet.bind(this);
+        this.getWalletDetailedAnalytics = this.getWalletDetailedAnalytics.bind(this);
+        this.getAnalyticsByCategory = this.getAnalyticsByCategory.bind(this);
+        this.getTopTransactions = this.getTopTransactions.bind(this);
+        this.getPeriodComparison = this.getPeriodComparison.bind(this);
+        this.getAnalyticsByPaymentMethod = this.getAnalyticsByPaymentMethod.bind(this);
+    }
+
+    /**
+     * Helper: Convert userId to ObjectId
+     */
+    _toObjectId(id) {
+        return mongoose.Types.ObjectId.isValid(id)
+            ? new mongoose.Types.ObjectId(id)
+            : id;
+    }
+
+    /**
+     * Helper: Build base filter for personal transactions
+     */
+    _buildPersonalFilter(userId, options = {}) {
+        const { startDate, endDate, walletId, type } = options;
+
+        const filter = {
+            userId: this._toObjectId(userId),
+            $or: [
+                { isShared: false },
+                { isShared: { $exists: false } }
+            ]
+        };
+
+        // Date range
+        if (startDate || endDate) {
+            filter.date = {};
+            if (startDate) filter.date.$gte = new Date(startDate);
+            if (endDate) filter.date.$lte = new Date(endDate);
+        }
+
+        // Wallet filter
+        if (walletId) {
+            filter.walletId = this._toObjectId(walletId);
+        }
+
+        // Transaction type
+        if (type) {
+            filter.type = type;
+        }
+
+        return filter;
+    }
+
     /**
      * GET /api/analytics/personal/overview
-     * Tổng quan tài chính CÁ NHÂN (không liên quan family)
+     * Tổng quan tài chính CÁ NHÂN
      */
     async getPersonalOverview(req, res) {
         try {
             const userId = req.userId;
             const { startDate, endDate, walletId } = req.query;
 
-            // ----- FILTER TRANSACTION CÁ NHÂN -----
-            const dateFilter = {
-                userId,
-                // isDeleted: { $ne: true },
-                // $or: [
-                //     { isShared: false },          // giao dịch cá nhân
-                //     { isShared: { $exists: false } } // giao dịch không có field isShared
-                // ]
-            };
+            const dateFilter = this._buildPersonalFilter(userId, { startDate, endDate, walletId });
 
-            // ----- FILTER DATE -----
-            if (startDate || endDate) {
-                dateFilter.date = {};
-                if (startDate) dateFilter.date.$gte = new Date(startDate);
-                if (endDate) dateFilter.date.$lte = new Date(endDate);
-            }
+            console.log('📊 getPersonalOverview - filter:', JSON.stringify(dateFilter));
 
-            // ----- FILTER WALLET -----
-            if (walletId) {
-                dateFilter.walletId = new mongoose.Types.ObjectId(walletId);
-            }
-
-            // ----- TÍNH THU NHẬP & CHI TIÊU -----
+            // Aggregate income & expense
             const [incomeResult, expenseResult] = await Promise.all([
                 Transaction.aggregate([
-                    { $match: { userId: req.userId, type: 'income' } },
+                    { $match: { ...dateFilter, type: 'income' } },
                     { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } }
                 ]),
                 Transaction.aggregate([
@@ -45,43 +83,43 @@ class AnalyticsController {
                     { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } }
                 ])
             ]);
-            console.log(req.userId, incomeResult, expenseResult);
 
             const totalIncome = incomeResult[0]?.total || 0;
             const totalExpense = expenseResult[0]?.total || 0;
+            const incomeCount = incomeResult[0]?.count || 0;
+            const expenseCount = expenseResult[0]?.count || 0;
 
-            // ----- LẤY VÍ CÁ NHÂN -----
+            // Lấy tổng số dư ví cá nhân
             const wallets = await Wallet.find({
-                userId,
-                isShared: false, // mọi ví không share đều là ví cá nhân
-                isActive: true
+                userId: this._toObjectId(userId),
+                isActive: true,
+                isShared: false
             });
 
-            const totalBalance = wallets.reduce((sum, w) => sum + w.balance, 0);
+            const totalBalance = wallets.reduce((sum, w) => sum + (w.balance || 0), 0);
 
             return res.status(200).json({
                 message: 'Lấy tổng quan tài chính cá nhân thành công',
                 data: {
                     income: {
                         total: totalIncome,
-                        count: incomeResult[0]?.count || 0
+                        count: incomeCount
                     },
                     expense: {
                         total: totalExpense,
-                        count: expenseResult[0]?.count || 0
+                        count: expenseCount
                     },
                     netBalance: totalIncome - totalExpense,
                     totalWalletBalance: totalBalance,
                     walletsCount: wallets.length,
                     period: {
-                        startDate: startDate || null,
-                        endDate: endDate || null
+                        startDate: startDate || '',
+                        endDate: endDate || ''
                     }
                 }
             });
-
         } catch (error) {
-            console.error('Error in getPersonalOverview:', error);
+            console.error('❌ Error in getPersonalOverview:', error);
             return res.status(500).json({
                 error: 'Lỗi khi lấy tổng quan tài chính cá nhân',
                 details: error.message
@@ -89,53 +127,25 @@ class AnalyticsController {
         }
     }
 
-
     /**
      * GET /api/analytics/personal/spending-trend
-     * Xu hướng chi tiêu cá nhân theo thời gian (day/week/month)
+     * Xu hướng chi tiêu cá nhân theo thời gian
      */
     async getPersonalSpendingTrend(req, res) {
         try {
             const userId = req.userId;
             const { startDate, endDate, groupBy = 'day', walletId } = req.query;
 
-            // Lấy ví cá nhân
-            const personalWallets = await Wallet.find({
-                userId,
-                isActive: true,
-                isShared: false,
-                scope: { $in: ['personal', 'default_receive', 'default_savings', 'default_debt', 'default_expense'] }
-            }).select('_id');
-
-            const personalWalletIds = personalWallets.map(w => w._id);
-
-            const matchFilter = {
-                userId,
-                walletId: { $in: personalWalletIds },
-                isDeleted: { $ne: true }
-            };
-
-            if (walletId) {
-                const isPersonalWallet = personalWalletIds.some(id => id.toString() === walletId);
-                if (!isPersonalWallet) {
-                    return res.status(400).json({
-                        error: 'Ví được chọn không phải là ví cá nhân'
-                    });
-                }
-                matchFilter.walletId = walletId;
-            }
-
-            if (startDate || endDate) {
-                matchFilter.date = {};
-                if (startDate) matchFilter.date.$gte = new Date(startDate);
-                if (endDate) matchFilter.date.$lte = new Date(endDate);
-            }
+            const matchFilter = this._buildPersonalFilter(userId, { startDate, endDate, walletId });
 
             // Xác định format groupBy
             let dateFormat;
             switch (groupBy) {
                 case 'week':
-                    dateFormat = { $isoWeek: '$date' };
+                    dateFormat = {
+                        year: { $year: '$date' },
+                        week: { $isoWeek: '$date' }
+                    };
                     break;
                 case 'month':
                     dateFormat = { $dateToString: { format: '%Y-%m', date: '$date' } };
@@ -163,10 +173,20 @@ class AnalyticsController {
             // Format data
             const formattedData = {};
             trendData.forEach(item => {
-                const period = item._id.period;
+                const period = typeof item._id.period === 'object'
+                    ? `${item._id.period.year}-W${item._id.period.week}`
+                    : item._id.period;
+
                 if (!formattedData[period]) {
-                    formattedData[period] = { period, income: 0, expense: 0, incomeCount: 0, expenseCount: 0 };
+                    formattedData[period] = {
+                        period,
+                        income: 0,
+                        expense: 0,
+                        incomeCount: 0,
+                        expenseCount: 0
+                    };
                 }
+
                 if (item._id.type === 'income') {
                     formattedData[period].income = item.total;
                     formattedData[period].incomeCount = item.count;
@@ -189,7 +209,7 @@ class AnalyticsController {
                 }
             });
         } catch (error) {
-            console.error('Error in getPersonalSpendingTrend:', error);
+            console.error('❌ Error in getPersonalSpendingTrend:', error);
             return res.status(500).json({
                 error: 'Lỗi khi lấy xu hướng chi tiêu',
                 details: error.message
@@ -206,27 +226,7 @@ class AnalyticsController {
             const userId = req.userId;
             const { startDate, endDate } = req.query;
 
-            // Lấy ví cá nhân
-            const personalWallets = await Wallet.find({
-                userId,
-                isActive: true,
-                isShared: false,
-                scope: { $in: ['personal', 'default_receive', 'default_savings', 'default_debt', 'default_expense'] }
-            }).lean();
-
-            const personalWalletIds = personalWallets.map(w => w._id);
-
-            const dateFilter = {
-                userId,
-                walletId: { $in: personalWalletIds },
-                isDeleted: { $ne: true }
-            };
-
-            if (startDate || endDate) {
-                dateFilter.date = {};
-                if (startDate) dateFilter.date.$gte = new Date(startDate);
-                if (endDate) dateFilter.date.$lte = new Date(endDate);
-            }
+            const dateFilter = this._buildPersonalFilter(userId, { startDate, endDate });
 
             // Aggregate theo wallet
             const walletStats = await Transaction.aggregate([
@@ -243,15 +243,22 @@ class AnalyticsController {
                 }
             ]);
 
+            // Lấy thông tin wallet
+            const walletIds = [...new Set(walletStats.map(s => s._id.walletId).filter(Boolean))];
+            const wallets = await Wallet.find({
+                _id: { $in: walletIds },
+                userId: this._toObjectId(userId),
+                isShared: false
+            }).lean();
+
             // Map data
             const walletMap = {};
-            personalWallets.forEach(w => {
+            wallets.forEach(w => {
                 walletMap[w._id.toString()] = {
                     walletId: w._id,
                     walletName: w.name,
                     walletType: w.type,
-                    walletScope: w.scope,
-                    walletIcon: w.icon,
+                    walletIcon: w.icon || '',
                     currentBalance: w.balance,
                     income: 0,
                     expense: 0,
@@ -284,7 +291,7 @@ class AnalyticsController {
                 data: result
             });
         } catch (error) {
-            console.error('Error in getAnalyticsByWallet:', error);
+            console.error('❌ Error in getAnalyticsByWallet:', error);
             return res.status(500).json({
                 error: 'Lỗi khi phân tích theo ví',
                 details: error.message
@@ -302,31 +309,24 @@ class AnalyticsController {
             const { walletId } = req.params;
             const { startDate, endDate } = req.query;
 
-            // Kiểm tra wallet có thuộc user và là ví cá nhân không
+            // Kiểm tra wallet
             const wallet = await Wallet.findOne({
-                _id: walletId,
-                userId,
-                isShared: false,
-                scope: { $in: ['personal', 'default_receive', 'default_savings', 'default_debt', 'default_expense'] }
+                _id: this._toObjectId(walletId),
+                userId: this._toObjectId(userId),
+                isShared: false
             });
 
             if (!wallet) {
                 return res.status(404).json({
-                    error: 'Không tìm thấy ví cá nhân hoặc không có quyền truy cập'
+                    error: 'Không tìm thấy ví hoặc không có quyền truy cập'
                 });
             }
 
-            const dateFilter = {
-                userId,
-                walletId,
-                isDeleted: { $ne: true }
-            };
-
-            if (startDate || endDate) {
-                dateFilter.date = {};
-                if (startDate) dateFilter.date.$gte = new Date(startDate);
-                if (endDate) dateFilter.date.$lte = new Date(endDate);
-            }
+            const dateFilter = this._buildPersonalFilter(userId, {
+                startDate,
+                endDate,
+                walletId
+            });
 
             // 1. Tổng quan
             const [incomeResult, expenseResult] = await Promise.all([
@@ -360,16 +360,16 @@ class AnalyticsController {
             const categoryMap = {};
             categories.forEach(c => categoryMap[c._id.toString()] = c.name);
 
-            const totalExpenseAmount = expenseResult[0]?.total || 0;
+            const totalExpense = expenseResult[0]?.total || 0;
             const formattedCategories = categoryBreakdown.map(c => ({
                 categoryId: c._id,
                 categoryName: c._id ? categoryMap[c._id.toString()] || 'Không xác định' : 'Không phân loại',
                 total: c.total,
                 count: c.count,
-                percentage: totalExpenseAmount > 0 ? ((c.total / totalExpenseAmount) * 100).toFixed(2) : 0
+                percentage: totalExpense > 0 ? ((c.total / totalExpense) * 100).toFixed(2) : 0
             }));
 
-            // 3. Xu hướng theo ngày
+            // 3. Xu hướng theo ngày (7-14 ngày gần nhất)
             const dailyTrend = await Transaction.aggregate([
                 { $match: dateFilter },
                 {
@@ -382,7 +382,7 @@ class AnalyticsController {
                     }
                 },
                 { $sort: { '_id.date': -1 } },
-                { $limit: 14 }
+                { $limit: 28 } // 14 days * 2 types max
             ]);
 
             const dailyMap = {};
@@ -400,23 +400,22 @@ class AnalyticsController {
                         id: wallet._id,
                         name: wallet.name,
                         type: wallet.type,
-                        scope: wallet.scope,
-                        icon: wallet.icon,
+                        icon: wallet.icon || '',
                         currentBalance: wallet.balance
                     },
                     summary: {
                         totalIncome: incomeResult[0]?.total || 0,
-                        totalExpense: totalExpenseAmount,
+                        totalExpense: totalExpense,
                         incomeCount: incomeResult[0]?.count || 0,
                         expenseCount: expenseResult[0]?.count || 0,
-                        net: (incomeResult[0]?.total || 0) - totalExpenseAmount
+                        net: (incomeResult[0]?.total || 0) - totalExpense
                     },
                     expenseByCategory: formattedCategories,
                     dailyTrend: Object.values(dailyMap).sort((a, b) => b.date.localeCompare(a.date))
                 }
             });
         } catch (error) {
-            console.error('Error in getWalletDetailedAnalytics:', error);
+            console.error('❌ Error in getWalletDetailedAnalytics:', error);
             return res.status(500).json({
                 error: 'Lỗi khi lấy phân tích chi tiết ví',
                 details: error.message
@@ -426,35 +425,18 @@ class AnalyticsController {
 
     /**
      * GET /api/analytics/personal/by-category
-     * Phân tích chi tiêu theo danh mục (tất cả ví cá nhân)
+     * Phân tích chi tiêu theo danh mục
      */
     async getAnalyticsByCategory(req, res) {
         try {
             const userId = req.userId;
             const { startDate, endDate, type = 'expense', limit = '10' } = req.query;
 
-            // Lấy ví cá nhân
-            const personalWallets = await Wallet.find({
-                userId,
-                isActive: true,
-                isShared: false,
-                scope: { $in: ['personal', 'default_receive', 'default_savings', 'default_debt', 'default_expense'] }
-            }).select('_id');
-
-            const personalWalletIds = personalWallets.map(w => w._id);
-
-            const matchFilter = {
-                userId,
-                type,
-                walletId: { $in: personalWalletIds },
-                isDeleted: { $ne: true }
-            };
-
-            if (startDate || endDate) {
-                matchFilter.date = {};
-                if (startDate) matchFilter.date.$gte = new Date(startDate);
-                if (endDate) matchFilter.date.$lte = new Date(endDate);
-            }
+            const matchFilter = this._buildPersonalFilter(userId, {
+                startDate,
+                endDate,
+                type
+            });
 
             const categoryStats = await Transaction.aggregate([
                 { $match: matchFilter },
@@ -470,7 +452,7 @@ class AnalyticsController {
                 { $limit: parseInt(limit) }
             ]);
 
-            // Get total for percentage calculation
+            // Get total for percentage
             const totalResult = await Transaction.aggregate([
                 { $match: matchFilter },
                 { $group: { _id: null, grandTotal: { $sum: '$amount' } } }
@@ -485,10 +467,12 @@ class AnalyticsController {
 
             const result = categoryStats.map(stat => ({
                 categoryId: stat._id,
-                categoryName: stat._id ? categoryMap[stat._id.toString()]?.name || 'Không xác định' : 'Không phân loại',
+                categoryName: stat._id
+                    ? categoryMap[stat._id.toString()]?.name || 'Không xác định'
+                    : 'Không phân loại',
                 total: stat.total,
                 count: stat.count,
-                avgAmount: stat.avgAmount,
+                avgAmount: Math.round(stat.avgAmount),
                 percentage: grandTotal > 0 ? ((stat.total / grandTotal) * 100).toFixed(2) : 0
             }));
 
@@ -501,7 +485,7 @@ class AnalyticsController {
                 }
             });
         } catch (error) {
-            console.error('Error in getAnalyticsByCategory:', error);
+            console.error('❌ Error in getAnalyticsByCategory:', error);
             return res.status(500).json({
                 error: 'Lỗi khi phân tích theo danh mục',
                 details: error.message
@@ -518,53 +502,49 @@ class AnalyticsController {
             const userId = req.userId;
             const { startDate, endDate, type = 'expense', limit = '10', walletId } = req.query;
 
-            // Lấy ví cá nhân
-            const personalWallets = await Wallet.find({
-                userId,
-                isActive: true,
-                isShared: false,
-                scope: { $in: ['personal', 'default_receive', 'default_savings', 'default_debt', 'default_expense'] }
-            }).select('_id');
-
-            const personalWalletIds = personalWallets.map(w => w._id);
-
-            const matchFilter = {
-                userId,
-                walletId: { $in: personalWalletIds },
-                isDeleted: { $ne: true }
-            };
-
-            if (type) matchFilter.type = type;
-
-            if (walletId) {
-                const isPersonalWallet = personalWalletIds.some(id => id.toString() === walletId);
-                if (!isPersonalWallet) {
-                    return res.status(400).json({
-                        error: 'Ví được chọn không phải là ví cá nhân'
-                    });
-                }
-                matchFilter.walletId = walletId;
-            }
-
-            if (startDate || endDate) {
-                matchFilter.date = {};
-                if (startDate) matchFilter.date.$gte = new Date(startDate);
-                if (endDate) matchFilter.date.$lte = new Date(endDate);
-            }
+            const matchFilter = this._buildPersonalFilter(userId, {
+                startDate,
+                endDate,
+                walletId,
+                type
+            });
 
             const topTransactions = await Transaction.find(matchFilter)
                 .sort({ amount: -1 })
                 .limit(parseInt(limit))
                 .populate('categoryId', 'name')
-                .populate('walletId', 'name icon scope')
+                .populate('walletId', 'name icon')
                 .lean();
+            const normalized = topTransactions.map(t => ({
+                id: t._id,
+                amount: t.amount,
+                type: t.type,
+                date: t.date,
+                description: t.description || '',
+                category: t.categoryId ? {
+                    id: t.categoryId._id,
+                    name: t.categoryId.name || ''
+                } : {
+                    id: '',
+                    name: ''
+                },
+                wallet: t.walletId ? {
+                    id: t.walletId._id,
+                    name: t.walletId.name || '',
+                    icon: t.walletId.icon || ''
+                } : {
+                    id: '',
+                    name: '',
+                    icon: ''
+                }
+            }));
 
             return res.status(200).json({
                 message: 'Lấy top giao dịch thành công',
-                data: topTransactions
+                data: normalized
             });
         } catch (error) {
-            console.error('Error in getTopTransactions:', error);
+            console.error('❌ Error in getTopTransactions:', error);
             return res.status(500).json({
                 error: 'Lỗi khi lấy top giao dịch',
                 details: error.message
@@ -573,136 +553,290 @@ class AnalyticsController {
     }
 
     /**
+     * Helper: Get period dates based on type
+     */
+    _getPeriodDates(periodType, year, period) {
+        const now = new Date();
+        let startDate, endDate;
+
+        switch (periodType) {
+            case 'week':
+                // period: week number (1-53)
+                const weekNum = period || this._getCurrentWeek(now);
+                const yearNum = year || now.getFullYear();
+                startDate = this._getDateOfISOWeek(weekNum, yearNum);
+                endDate = new Date(startDate);
+                endDate.setDate(endDate.getDate() + 6);
+                break;
+
+            case 'month':
+                // period: month number (1-12)
+                const monthNum = period || (now.getMonth() + 1);
+                const monthYear = year || now.getFullYear();
+                startDate = new Date(monthYear, monthNum - 1, 1);
+                endDate = new Date(monthYear, monthNum, 0); // Last day of month
+                break;
+
+            case 'quarter':
+                // period: quarter number (1-4)
+                const quarterNum = period || Math.ceil((now.getMonth() + 1) / 3);
+                const quarterYear = year || now.getFullYear();
+                const quarterStartMonth = (quarterNum - 1) * 3;
+                startDate = new Date(quarterYear, quarterStartMonth, 1);
+                endDate = new Date(quarterYear, quarterStartMonth + 3, 0);
+                break;
+
+            case 'year':
+                // period: ignored, use year param
+                const yearValue = year || now.getFullYear();
+                startDate = new Date(yearValue, 0, 1);
+                endDate = new Date(yearValue, 11, 31);
+                break;
+
+            default:
+                throw new Error('Invalid period type. Use: week, month, quarter, year');
+        }
+
+        return { startDate, endDate };
+    }
+
+    /**
+     * Helper: Get current ISO week number
+     */
+    _getCurrentWeek(date) {
+        const d = new Date(date);
+        d.setHours(0, 0, 0, 0);
+        d.setDate(d.getDate() + 4 - (d.getDay() || 7));
+        const yearStart = new Date(d.getFullYear(), 0, 1);
+        return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+    }
+
+    /**
+     * Helper: Get date of ISO week
+     */
+    _getDateOfISOWeek(week, year) {
+        const simple = new Date(year, 0, 1 + (week - 1) * 7);
+        const dow = simple.getDay();
+        const ISOweekStart = simple;
+        if (dow <= 4) {
+            ISOweekStart.setDate(simple.getDate() - simple.getDay() + 1);
+        } else {
+            ISOweekStart.setDate(simple.getDate() + 8 - simple.getDay());
+        }
+        return ISOweekStart;
+    }
+
+    /**
+     * Helper: Get period data from transactions
+     */
+    async _getPeriodData(userId, startDate, endDate) {
+        const baseFilter = this._buildPersonalFilter(userId, {});
+
+        const [incomeResult, expenseResult] = await Promise.all([
+            Transaction.aggregate([
+                {
+                    $match: {
+                        ...baseFilter,
+                        type: 'income',
+                        date: { $gte: startDate, $lte: endDate }
+                    }
+                },
+                { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } }
+            ]),
+            Transaction.aggregate([
+                {
+                    $match: {
+                        ...baseFilter,
+                        type: 'expense',
+                        date: { $gte: startDate, $lte: endDate }
+                    }
+                },
+                { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } }
+            ])
+        ]);
+
+        const income = incomeResult[0]?.total || 0;
+        const expense = expenseResult[0]?.total || 0;
+        const incomeCount = incomeResult[0]?.count || 0;
+        const expenseCount = expenseResult[0]?.count || 0;
+
+        return {
+            startDate,
+            endDate,
+            income,
+            expense,
+            incomeCount,
+            expenseCount,
+            net: income - expense
+        };
+    }
+
+    /**
      * GET /api/analytics/personal/comparison
-     * So sánh kỳ này vs kỳ trước
+     * So sánh nhiều kỳ cùng loại (tuần/tháng/quý/năm)
+     * 
+     * Query params:
+     * - periodType: 'week' | 'month' | 'quarter' | 'year' (default: 'month')
+     * - periods: array of period configs, e.g. 
+     *   - For month: [{"year": 2024, "period": 12}, {"year": 2024, "period": 11}]
+     *   - For week: [{"year": 2024, "period": 50}, {"year": 2024, "period": 49}]
+     * 
+     * If no periods specified, compares current period with previous period
      */
     async getPeriodComparison(req, res) {
         try {
             const userId = req.userId;
-            const { currentStart, currentEnd } = req.query;
+            const { periodType = 'month', periods } = req.query;
 
-            if (!currentStart || !currentEnd) {
-                return res.status(400).json({ error: 'currentStart và currentEnd là bắt buộc' });
+            // Validate periodType
+            const validTypes = ['week', 'month', 'quarter', 'year'];
+            if (!validTypes.includes(periodType)) {
+                return res.status(400).json({
+                    error: `periodType phải là một trong: ${validTypes.join(', ')}`
+                });
             }
 
-            // Lấy ví cá nhân
-            const personalWallets = await Wallet.find({
-                userId,
-                isActive: true,
-                isShared: false,
-                scope: { $in: ['personal', 'default_receive', 'default_savings', 'default_debt', 'default_expense'] }
-            }).select('_id');
+            let periodsToCompare = [];
 
-            const personalWalletIds = personalWallets.map(w => w._id);
+            // Parse periods from query
+            if (periods) {
+                try {
+                    periodsToCompare = JSON.parse(periods);
+                    if (!Array.isArray(periodsToCompare)) {
+                        return res.status(400).json({
+                            error: 'periods phải là array'
+                        });
+                    }
+                } catch (error) {
+                    return res.status(400).json({
+                        error: 'periods format không hợp lệ. Ví dụ: [{"year":2024,"period":12},{"year":2024,"period":11}]'
+                    });
+                }
+            } else {
+                // Default: So sánh kỳ hiện tại với kỳ trước
+                const now = new Date();
+                const currentYear = now.getFullYear();
 
-            const current_start = new Date(currentStart);
-            const current_end = new Date(currentEnd);
-            const periodLength = current_end - current_start;
+                switch (periodType) {
+                    case 'week':
+                        const currentWeek = this._getCurrentWeek(now);
+                        periodsToCompare = [
+                            { year: currentYear, period: currentWeek, label: 'Tuần này' },
+                            { year: currentYear, period: currentWeek - 1, label: 'Tuần trước' }
+                        ];
+                        break;
 
-            const previous_end = new Date(current_start.getTime() - 1);
-            const previous_start = new Date(previous_end.getTime() - periodLength);
+                    case 'month':
+                        const currentMonth = now.getMonth() + 1;
+                        const prevMonth = currentMonth === 1 ? 12 : currentMonth - 1;
+                        const prevMonthYear = currentMonth === 1 ? currentYear - 1 : currentYear;
+                        periodsToCompare = [
+                            { year: currentYear, period: currentMonth, label: 'Tháng này' },
+                            { year: prevMonthYear, period: prevMonth, label: 'Tháng trước' }
+                        ];
+                        break;
 
-            const baseFilter = {
-                userId,
-                walletId: { $in: personalWalletIds },
-                isDeleted: { $ne: true }
-            };
+                    case 'quarter':
+                        const currentQuarter = Math.ceil((now.getMonth() + 1) / 3);
+                        const prevQuarter = currentQuarter === 1 ? 4 : currentQuarter - 1;
+                        const prevQuarterYear = currentQuarter === 1 ? currentYear - 1 : currentYear;
+                        periodsToCompare = [
+                            { year: currentYear, period: currentQuarter, label: 'Quý này' },
+                            { year: prevQuarterYear, period: prevQuarter, label: 'Quý trước' }
+                        ];
+                        break;
 
-            // Current period
-            const [currentIncome, currentExpense] = await Promise.all([
-                Transaction.aggregate([
-                    {
-                        $match: {
-                            ...baseFilter,
-                            type: 'income',
-                            date: { $gte: current_start, $lte: current_end }
+                    case 'year':
+                        periodsToCompare = [
+                            { year: currentYear, label: 'Năm nay' },
+                            { year: currentYear - 1, label: 'Năm trước' }
+                        ];
+                        break;
+                }
+            }
+
+            // Get data for each period
+            const results = await Promise.all(
+                periodsToCompare.map(async (config) => {
+                    const { startDate, endDate } = this._getPeriodDates(
+                        periodType,
+                        config.year,
+                        config.period
+                    );
+
+                    const data = await this._getPeriodData(userId, startDate, endDate);
+
+                    return {
+                        label: config.label || this._getPeriodLabel(periodType, config.year, config.period),
+                        periodType,
+                        year: config.year,
+                        period: config.period,
+                        ...data
+                    };
+                })
+            );
+
+            // Calculate changes (so với kỳ đầu tiên)
+            const baselinePeriod = results[0];
+            const comparisons = results.slice(1).map(period => {
+                const incomeChange = baselinePeriod.income > 0
+                    ? (((period.income - baselinePeriod.income) / baselinePeriod.income) * 100).toFixed(2)
+                    : period.income > 0 ? 100 : 0;
+
+                const expenseChange = baselinePeriod.expense > 0
+                    ? (((period.expense - baselinePeriod.expense) / baselinePeriod.expense) * 100).toFixed(2)
+                    : period.expense > 0 ? 100 : 0;
+
+                return {
+                    ...period,
+                    changeVsBaseline: {
+                        income: {
+                            amount: period.income - baselinePeriod.income,
+                            percentage: parseFloat(incomeChange)
+                        },
+                        expense: {
+                            amount: period.expense - baselinePeriod.expense,
+                            percentage: parseFloat(expenseChange)
+                        },
+                        net: {
+                            amount: period.net - baselinePeriod.net
                         }
-                    },
-                    { $group: { _id: null, total: { $sum: '$amount' } } }
-                ]),
-                Transaction.aggregate([
-                    {
-                        $match: {
-                            ...baseFilter,
-                            type: 'expense',
-                            date: { $gte: current_start, $lte: current_end }
-                        }
-                    },
-                    { $group: { _id: null, total: { $sum: '$amount' } } }
-                ])
-            ]);
-
-            // Previous period
-            const [previousIncome, previousExpense] = await Promise.all([
-                Transaction.aggregate([
-                    {
-                        $match: {
-                            ...baseFilter,
-                            type: 'income',
-                            date: { $gte: previous_start, $lte: previous_end }
-                        }
-                    },
-                    { $group: { _id: null, total: { $sum: '$amount' } } }
-                ]),
-                Transaction.aggregate([
-                    {
-                        $match: {
-                            ...baseFilter,
-                            type: 'expense',
-                            date: { $gte: previous_start, $lte: previous_end }
-                        }
-                    },
-                    { $group: { _id: null, total: { $sum: '$amount' } } }
-                ])
-            ]);
-
-            const currentIncomeTotal = currentIncome[0]?.total || 0;
-            const currentExpenseTotal = currentExpense[0]?.total || 0;
-            const previousIncomeTotal = previousIncome[0]?.total || 0;
-            const previousExpenseTotal = previousExpense[0]?.total || 0;
-
-            const incomeChange = previousIncomeTotal > 0
-                ? (((currentIncomeTotal - previousIncomeTotal) / previousIncomeTotal) * 100).toFixed(2)
-                : 0;
-            const expenseChange = previousExpenseTotal > 0
-                ? (((currentExpenseTotal - previousExpenseTotal) / previousExpenseTotal) * 100).toFixed(2)
-                : 0;
+                    }
+                };
+            });
 
             return res.status(200).json({
                 message: 'So sánh kỳ thành công',
                 data: {
-                    currentPeriod: {
-                        startDate: current_start,
-                        endDate: current_end,
-                        income: currentIncomeTotal,
-                        expense: currentExpenseTotal,
-                        net: currentIncomeTotal - currentExpenseTotal
-                    },
-                    previousPeriod: {
-                        startDate: previous_start,
-                        endDate: previous_end,
-                        income: previousIncomeTotal,
-                        expense: previousExpenseTotal,
-                        net: previousIncomeTotal - previousExpenseTotal
-                    },
-                    change: {
-                        income: {
-                            amount: currentIncomeTotal - previousIncomeTotal,
-                            percentage: incomeChange
-                        },
-                        expense: {
-                            amount: currentExpenseTotal - previousExpenseTotal,
-                            percentage: expenseChange
-                        }
-                    }
+                    periodType,
+                    baseline: baselinePeriod,
+                    comparisons
                 }
             });
         } catch (error) {
-            console.error('Error in getPeriodComparison:', error);
+            console.error('❌ Error in getPeriodComparison:', error);
             return res.status(500).json({
                 error: 'Lỗi khi so sánh kỳ',
                 details: error.message
             });
+        }
+    }
+
+    /**
+     * Helper: Get period label
+     */
+    _getPeriodLabel(periodType, year, period) {
+        switch (periodType) {
+            case 'week':
+                return `Tuần ${period}/${year}`;
+            case 'month':
+                return `Tháng ${period}/${year}`;
+            case 'quarter':
+                return `Quý ${period}/${year}`;
+            case 'year':
+                return `Năm ${year}`;
+            default:
+                return 'Unknown';
         }
     }
 
@@ -715,28 +849,11 @@ class AnalyticsController {
             const userId = req.userId;
             const { startDate, endDate, type = 'expense' } = req.query;
 
-            // Lấy ví cá nhân
-            const personalWallets = await Wallet.find({
-                userId,
-                isActive: true,
-                isShared: false,
-                scope: { $in: ['personal', 'default_receive', 'default_savings', 'default_debt', 'default_expense'] }
-            }).select('_id');
-
-            const personalWalletIds = personalWallets.map(w => w._id);
-
-            const matchFilter = {
-                userId,
-                type,
-                walletId: { $in: personalWalletIds },
-                isDeleted: { $ne: true }
-            };
-
-            if (startDate || endDate) {
-                matchFilter.date = {};
-                if (startDate) matchFilter.date.$gte = new Date(startDate);
-                if (endDate) matchFilter.date.$lte = new Date(endDate);
-            }
+            const matchFilter = this._buildPersonalFilter(userId, {
+                startDate,
+                endDate,
+                type
+            });
 
             const paymentStats = await Transaction.aggregate([
                 { $match: matchFilter },
@@ -772,7 +889,7 @@ class AnalyticsController {
                 }
             });
         } catch (error) {
-            console.error('Error in getAnalyticsByPaymentMethod:', error);
+            console.error('❌ Error in getAnalyticsByPaymentMethod:', error);
             return res.status(500).json({
                 error: 'Lỗi khi phân tích theo phương thức thanh toán',
                 details: error.message
