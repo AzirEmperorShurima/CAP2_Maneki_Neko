@@ -51,12 +51,10 @@ export const createTransaction = async (req, res) => {
 
         const { amount, type, expense_for, date, description, isShared, categoryId, walletId } = value;
 
-        // Tìm hoặc tạo wallet
         let wallet = null;
         let walletCreated = false;
 
         if (walletId) {
-            // Nếu có chỉ định walletId, tìm wallet đó
             wallet = await Wallet.findOne({
                 _id: walletId,
                 userId: req.userId,
@@ -69,7 +67,6 @@ export const createTransaction = async (req, res) => {
                 });
             }
 
-            // Kiểm tra quyền giao dịch
             if (!wallet.canUserTransact(req.userId)) {
                 return res.status(403).json({
                     error: 'Bạn không có quyền giao dịch với ví này'
@@ -106,11 +103,10 @@ export const createTransaction = async (req, res) => {
         }
         let expense_for_type = ""
         if (type === 'expense') {
-            expense_for_type = expense_for || 'cá nhân';
+            expense_for_type = expense_for || 'Tôi';
         } else if (type === 'income') {
             expense_for_type = "";
         }
-        // Tạo transaction
         const transaction = new Transaction({
             userId: req.userId,
             walletId: wallet._id,
@@ -125,12 +121,10 @@ export const createTransaction = async (req, res) => {
 
         await transaction.save();
 
-        // Cập nhật số dư wallet
         if (type === 'expense') {
             wallet.balance -= amount;
             await wallet.save();
 
-            // Cập nhật budget
             const budgetUpdateCount = await updateBudgetSpentAmounts(req.userId, transaction);
             console.log(`✅ Updated ${budgetUpdateCount} budgets`);
             const budgetWarnings = await checkBudgetWarning(req.userId, transaction);
@@ -221,7 +215,6 @@ export const updateTransaction = async (req, res) => {
             });
         }
 
-        // Tìm transaction
         const transaction = await Transaction.findOne({
             _id: transactionId,
             userId: req.userId
@@ -240,7 +233,6 @@ export const updateTransaction = async (req, res) => {
             'isAutoCategorized', 'receiptImage', 'currency'
         ];
 
-        // Kiểm tra xem có thay đổi critical fields không
         const hasCriticalChanges = criticalFields.some(field =>
             value[field] !== undefined && value[field] !== transaction[field]
         );
@@ -253,8 +245,6 @@ export const updateTransaction = async (req, res) => {
             });
 
             await transaction.save();
-
-            // Populate và return
             const populatedTransaction = await Transaction.findById(transaction._id)
                 .populate('categoryId', 'name')
                 .populate('walletId', 'name balance scope type icon');

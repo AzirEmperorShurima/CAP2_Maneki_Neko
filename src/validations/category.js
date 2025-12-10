@@ -3,7 +3,7 @@ import Joi from "joi";
 export const createCategorySchema = Joi.object({
   name: Joi.string().min(1).max(50).required(),
   type: Joi.string().valid('income', 'expense').required(),
-  scope: Joi.string().valid('system', 'personal', 'family').required(),
+  scope: Joi.string().valid('system', 'personal', 'family').optional().default('personal'),
 });
 
 export const updateCategorySchema = Joi.object({

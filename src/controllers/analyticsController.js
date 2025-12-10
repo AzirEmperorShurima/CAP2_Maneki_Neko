@@ -66,13 +66,19 @@ class AnalyticsController {
     async getPersonalOverview(req, res) {
         try {
             const userId = req.userId;
-            const { startDate, endDate, walletId } = req.query;
+            const {
+                startDate,
+                endDate,
+                walletId,
+                includePeriodBreakdown = 'false',
+                breakdownType = 'month'
+            } = req.query;
 
             const dateFilter = this._buildPersonalFilter(userId, { startDate, endDate, walletId });
 
             console.log('📊 getPersonalOverview - filter:', JSON.stringify(dateFilter));
 
-            // Aggregate income & expense
+            // ===== 1. TỔNG QUAN TOÀN BỘ DATA =====
             const [incomeResult, expenseResult] = await Promise.all([
                 Transaction.aggregate([
                     { $match: { ...dateFilter, type: 'income' } },
@@ -98,26 +104,126 @@ class AnalyticsController {
 
             const totalBalance = wallets.reduce((sum, w) => sum + (w.balance || 0), 0);
 
-            return res.status(200).json({
+            const overallSummary = {
+                income: {
+                    total: totalIncome,
+                    count: incomeCount
+                },
+                expense: {
+                    total: totalExpense,
+                    count: expenseCount
+                },
+                netBalance: totalIncome - totalExpense,
+                totalWalletBalance: totalBalance,
+                walletsCount: wallets.length,
+                period: {
+                    startDate: startDate || null,
+                    endDate: endDate || null
+                }
+            };
+
+            // ===== 2. BREAKDOWN THEO THÁNG/NĂM (NẾU YÊU CẦU) =====
+            let periodBreakdown = null;
+
+            if (includePeriodBreakdown === 'true') {
+                const breakdownFilter = this._buildPersonalFilter(userId, { startDate, endDate, walletId });
+
+                let groupByFormat;
+                let sortField;
+
+                if (breakdownType === 'year') {
+                    // Group by year
+                    groupByFormat = { $year: '$date' };
+                    sortField = '_id';
+                } else {
+                    // Group by month (default)
+                    groupByFormat = {
+                        year: { $year: '$date' },
+                        month: { $month: '$date' }
+                    };
+                    sortField = '_id.year';
+                }
+
+                const breakdown = await Transaction.aggregate([
+                    { $match: breakdownFilter },
+                    {
+                        $group: {
+                            _id: {
+                                period: groupByFormat,
+                                type: '$type'
+                            },
+                            total: { $sum: '$amount' },
+                            count: { $sum: 1 }
+                        }
+                    },
+                    { $sort: { [sortField]: -1, '_id.period': -1 } }
+                ]);
+
+                // Format breakdown data
+                const formattedBreakdown = {};
+
+                breakdown.forEach(item => {
+                    let periodKey;
+                    let periodLabel;
+
+                    if (breakdownType === 'year') {
+                        periodKey = item._id.period;
+                        periodLabel = `Năm ${item._id.period}`;
+                    } else {
+                        // month
+                        const year = item._id.period.year;
+                        const month = item._id.period.month;
+                        periodKey = `${year}-${String(month).padStart(2, '0')}`;
+                        periodLabel = `Tháng ${month}/${year}`;
+                    }
+
+                    if (!formattedBreakdown[periodKey]) {
+                        formattedBreakdown[periodKey] = {
+                            period: periodLabel,
+                            periodKey,
+                            income: 0,
+                            expense: 0,
+                            incomeCount: 0,
+                            expenseCount: 0
+                        };
+                    }
+
+                    if (item._id.type === 'income') {
+                        formattedBreakdown[periodKey].income = item.total;
+                        formattedBreakdown[periodKey].incomeCount = item.count;
+                    } else {
+                        formattedBreakdown[periodKey].expense = item.total;
+                        formattedBreakdown[periodKey].expenseCount = item.count;
+                    }
+                });
+
+                // Add net balance and sort
+                periodBreakdown = Object.values(formattedBreakdown)
+                    .map(item => ({
+                        ...item,
+                        net: item.income - item.expense,
+                        totalTransactions: item.incomeCount + item.expenseCount
+                    }))
+                    .sort((a, b) => b.periodKey.localeCompare(a.periodKey)); // Sort descending
+            }
+
+            // ===== 3. RESPONSE =====
+            const response = {
                 message: 'Lấy tổng quan tài chính cá nhân thành công',
                 data: {
-                    income: {
-                        total: totalIncome,
-                        count: incomeCount
-                    },
-                    expense: {
-                        total: totalExpense,
-                        count: expenseCount
-                    },
-                    netBalance: totalIncome - totalExpense,
-                    totalWalletBalance: totalBalance,
-                    walletsCount: wallets.length,
-                    period: {
-                        startDate: startDate || '',
-                        endDate: endDate || ''
-                    }
+                    overall: overallSummary
                 }
-            });
+            };
+
+            if (periodBreakdown) {
+                response.data.breakdown = {
+                    type: breakdownType,
+                    periods: periodBreakdown
+                };
+            }
+
+            return res.status(200).json(response);
+
         } catch (error) {
             console.error('❌ Error in getPersonalOverview:', error);
             return res.status(500).json({

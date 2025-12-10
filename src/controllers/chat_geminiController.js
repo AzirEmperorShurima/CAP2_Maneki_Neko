@@ -85,9 +85,14 @@ export const geminiChatController = async (req, res) => {
     if (!message?.trim()) {
       return res.status(400).json({ error: 'Tin nhắn không được để trống' });
     }
-
+    const categories = await Category.find({ userId: req.userId });
+    const categoriesPayload = categories.map(category => ({
+      id: category._id,
+      name: category.name,
+      type: category.type,
+    }));
     const chatPayload = [
-      { role: 'user', parts: [{ text: `${SYSTEM_PROMPT}\n\n${message}` }] }
+      { role: 'user', parts: [{ text: `${SYSTEM_PROMPT}\n\n"message": ${message}\n\n"categories for transaction": ${JSON.stringify(categoriesPayload)}` }] }
     ];
 
     const result = await geminiChat(chatPayload);
@@ -130,6 +135,8 @@ export const geminiChatController = async (req, res) => {
           name: data.category_name,
           type: data.type,
           keywords: data.category_name.toLowerCase().split(/\s+/),
+          scope: 'personal',
+          userId: req.userId
         });
         reply += `Đã tạo danh mục mới "${data.category_name}". `;
       }

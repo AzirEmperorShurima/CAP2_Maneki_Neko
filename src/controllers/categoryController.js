@@ -9,13 +9,15 @@ export const createCategory = async (req, res) => {
     }
     const { name, type, scope } = value;
     const _user = await user.findById(req.userId).lean();
+    if (!_user) return res.status(404).json({ error: 'User not found' });
 
     const _category = new category({
         name,
         type,
-        scope,
+        scope: scope || 'personal',
         userId: _user._id,
-        familyId: _user.familyId || null
+        familyId: _user.familyId || null,
+        isDefault: scope === 'system',
     });
     await _category.save();
 
@@ -109,7 +111,7 @@ export const getCategories = async (req, res) => {
         const normalizedCategories = categories.map(cat => {
             const { _id, ...rest } = cat;
             return {
-                id: _id.toString(),     
+                id: _id.toString(),
                 ...rest,
                 userId: cat.userId?.toString() || "",
                 familyId: cat.familyId?.toString() || ""

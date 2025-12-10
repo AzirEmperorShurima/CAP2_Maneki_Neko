@@ -9,7 +9,7 @@ export const createTransactionSchema = Joi.object({
   isShared: Joi.boolean().optional(),
   categoryId: Joi.string().hex().length(24).optional().empty(''),
   walletId: Joi.string().hex().length(24).optional().empty(''),
-  expense_for: Joi.string().optional().empty(''),
+  expense_for: Joi.string().optional().empty('').default("Tôi"),
 });
 
 export function validateCreateTransaction(payload) {

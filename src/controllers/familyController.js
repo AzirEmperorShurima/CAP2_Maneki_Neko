@@ -9,6 +9,7 @@ import dayjs from 'dayjs';
 import crypto from 'crypto';
 import PushNotificationService from '../services/pushNotificationService.js';
 import { sendFamilyInviteNotification } from '../utils/notificationHelper.js';
+import { formatFamilyResponse } from '../utils/family.js';
 
 const generateInviteCode = async (length = 8) => {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -39,21 +40,33 @@ export const createFamily = async (req, res) => {
     }
 
     try {
-        const existingFamily = await User.findById(req.userId).populate('familyId');
-        if (existingFamily?.familyId) {
+        // Kiểm tra user đã thuộc family nào chưa (check cả familyId và members)
+        const existingUser = await User.findById(req.userId).select('familyId');
+        if (existingUser?.familyId) {
             return res.status(400).json({
                 error: 'Bạn đã thuộc một gia đình. Hãy rời nhóm trước khi tạo mới.'
             });
         }
 
+        // Double check: Kiểm tra xem user có trong members của family nào không
+        const existsInMembers = await Family.findOne({ members: req.userId }).select('_id');
+        if (existsInMembers) {
+            return res.status(400).json({
+                error: 'Bạn đã là thành viên của một gia đình. Hãy rời nhóm hiện tại trước.'
+            });
+        }
+
+        // Tạo family mới
         const family = new Family({
             name: name.trim(),
             adminId: req.userId,
             members: [req.userId],
+            inviteCode: await generateInviteCode()
         });
 
         await family.save();
 
+        // Cập nhật user
         await User.findByIdAndUpdate(
             req.userId,
             {
@@ -63,13 +76,17 @@ export const createFamily = async (req, res) => {
             { new: true }
         );
 
+        // Lấy family với thông tin đầy đủ
         const populatedFamily = await Family.findById(family._id)
             .populate('adminId', 'username email avatar')
             .populate('members', 'username email avatar');
 
+        // Format response chuẩn
+        const formattedFamily = formatFamilyResponse(populatedFamily, req.userId);
+
         res.status(201).json({
             message: 'Đã tạo nhóm gia đình thành công',
-            data: populatedFamily
+            data: formattedFamily
         });
     } catch (error) {
         console.error('Lỗi tạo family:', error);
@@ -77,10 +94,11 @@ export const createFamily = async (req, res) => {
     }
 };
 
+
 export const generateInviteLink = async (req, res) => {
     try {
         const user = await User.findById(req.userId);
-        if (!user.familyId || !user.isFamilyAdmin) {
+        if (!user || !user.familyId || !user.isFamilyAdmin) {
             return res.status(403).json({ error: 'Chỉ admin mới tạo link mời' });
         }
 
@@ -89,7 +107,7 @@ export const generateInviteLink = async (req, res) => {
             return res.status(404).json({ error: 'Không tìm thấy gia đình' });
         }
 
-        if (!family.inviteCode || family.inviteCode === 'null') {
+        if (!family.inviteCode) {
             family.inviteCode = await generateInviteCode();
             await family.save();
         }
@@ -109,7 +127,7 @@ export const sendInviteEmail = async (req, res) => {
         if (!email) return res.status(400).json({ error: 'Email là bắt buộc' });
 
         const admin = await User.findById(req.userId);
-        if (!admin.familyId || !admin.isFamilyAdmin) {
+        if (!admin || !admin.familyId || !admin.isFamilyAdmin) {
             return res.status(403).json({ error: 'Bạn phải ở trong 1 gia đình và là admin của gia đình' });
         }
 
@@ -127,7 +145,7 @@ export const sendInviteEmail = async (req, res) => {
         await family.save();
 
         // Đảm bảo có invite code
-        if (!family.inviteCode || family.inviteCode === 'null') {
+        if (!family.inviteCode) {
             family.inviteCode = await generateInviteCode();
             await family.save();
         }
@@ -217,7 +235,6 @@ export const joinFamilyWeb = async (req, res) => {
             `));
         }
 
-        // SỬA: dùng method hasValidPendingInvite
         if (!family.hasValidPendingInvite(email)) {
             return res.status(400).send(themedPage(`
                 <h2 style="margin:0 0 8px;color:#ef4444;text-align:center">Lời mời đã hết hạn</h2>
@@ -245,9 +262,7 @@ export const joinFamilyWeb = async (req, res) => {
             `));
         }
 
-        // SỬA: dùng method isMember
         if (family.isMember(user._id)) {
-            // Xóa pending invite - SỬA: dùng method removePendingInvite
             family.removePendingInvite(email);
             await family.save();
 
@@ -272,7 +287,6 @@ export const joinFamilyWeb = async (req, res) => {
             `));
         }
 
-        // Join thành công - SỬA: dùng method addMember
         family.addMember(user._id);
         family.removePendingInvite(email);
         await family.save();
@@ -302,6 +316,70 @@ export const joinFamilyWeb = async (req, res) => {
         `));
     }
 };
+export const joinFamilyApp = async (req, res) => {
+    try {
+        const { familyCode: rawFamilyCode } = req.body;
+        const userId = req.userId;
+        const familyCode = (rawFamilyCode || '').trim();
+        if (!userId) {
+            return res.status(401).json({ error: 'Bạn cần đăng nhập' });
+        }
+        if (!familyCode) {
+            return res.status(400).json({ error: 'Thông tin không hợp lệ. Cần mã gia đình (familyCode).' });
+        }
+
+        const family = await Family.findOne({ inviteCode: familyCode }).populate('adminId', 'username email avatar');
+        if (!family) {
+            return res.status(404).json({ error: 'Mã mời không hợp lệ hoặc đã hết hạn' });
+        }
+        if (!family.isActive) {
+            return res.status(400).json({ error: 'Gia đình đã bị vô hiệu hóa' });
+        }
+
+        const user = await User.findById(userId);
+        if (!user) {
+            return res.status(404).json({ error: 'Không tìm thấy người dùng' });
+        }
+
+        if (family.isMember(user._id)) {
+            return res.json({
+                message: 'Bạn đã là thành viên của gia đình này',
+                data: {
+                    familyId: family._id,
+                    familyName: family.name
+                }
+            });
+        }
+
+        if (user.familyId && user.familyId.toString() !== family._id.toString()) {
+            return res.status(400).json({ error: 'Bạn đang thuộc một gia đình khác. Vui lòng rời gia đình hiện tại trước.' });
+        }
+
+        family.addMember(user._id);
+        await family.save();
+
+        await User.findByIdAndUpdate(user._id, {
+            familyId: family._id,
+            isFamilyAdmin: false
+        });
+
+        const plain = typeof family.toObject === 'function' ? family.toObject() : family;
+        const normalized = {
+            id: plain._id,
+            name: plain.name || '',
+            admin_id: plain.adminId?._id?.toString() || (plain.adminId ? String(plain.adminId) : ''),
+            members: Array.isArray(plain.members) ? plain.members.map(m => (m && m.toString ? m.toString() : String(m))) : []
+        };
+
+        return res.json({
+            message: 'Tham gia gia đình thành công',
+            data: normalized
+        });
+    } catch (err) {
+        console.error('Lỗi join family app:', err);
+        res.status(500).json({ error: 'Lỗi server' });
+    }
+}
 
 export const leaveFamily = async (req, res) => {
     try {
@@ -376,6 +454,11 @@ export const getFamilyMembers = async (req, res) => {
 export const dissolveFamily = async (req, res) => {
     try {
         const user = await User.findById(req.userId);
+        if (!user) {
+            return res.status(StatusCodes.BAD_REQUEST).json({
+                error: 'Unauthorized'
+            });
+        }
         if (!user.familyId) {
             return res.status(StatusCodes.BAD_REQUEST).json({
                 error: 'Bạn chưa tham gia nhóm nào'
@@ -389,7 +472,6 @@ export const dissolveFamily = async (req, res) => {
             });
         }
 
-        // SỬA: dùng method isAdmin
         if (!family.isAdmin(req.userId)) {
             return res.status(StatusCodes.FORBIDDEN).json({
                 error: 'Chỉ có admin mới có thể phá hủy nhóm'
@@ -596,45 +678,277 @@ export const getFamilySpendingSummary = async (req, res) => {
         if (!user?.familyId) {
             return res.status(400).json({ error: 'Bạn chưa tham gia nhóm nào' });
         }
-        const family = await Family.findById(user.familyId);
+
+        const family = await Family.findById(user.familyId).populate('members', '_id username email avatar');
         if (!family || !family.isMember(req.userId)) {
             return res.status(403).json({ error: 'Không có quyền truy cập gia đình này' });
         }
-        const { startDate, endDate } = req.query;
-        const match = { familyId: user.familyId, isShared: true };
+
+        let { startDate, endDate, range } = req.query;
+        let periodLabel = '';
+
+        // Nếu có range, tính startDate và endDate theo range
+        if (range) {
+            const now = new Date();
+            
+            switch (range.toLowerCase()) {
+                case 'week': {
+                    // Tuần hiện tại (Thứ 2 đến Chủ nhật)
+                    const dayOfWeek = now.getDay(); // 0 = Chủ nhật, 1 = Thứ 2, ...
+                    const diffToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+                    
+                    startDate = new Date(now);
+                    startDate.setDate(now.getDate() + diffToMonday);
+                    startDate.setHours(0, 0, 0, 0);
+                    
+                    endDate = new Date(startDate);
+                    endDate.setDate(startDate.getDate() + 6);
+                    endDate.setHours(23, 59, 59, 999);
+                    
+                    periodLabel = 'Tuần này';
+                    break;
+                }
+                
+                case 'month': {
+                    // Tháng hiện tại
+                    startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+                    startDate.setHours(0, 0, 0, 0);
+                    
+                    endDate = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+                    endDate.setHours(23, 59, 59, 999);
+                    
+                    periodLabel = `Tháng ${now.getMonth() + 1}/${now.getFullYear()}`;
+                    break;
+                }
+                
+                case 'quarter': {
+                    // Quý hiện tại (Q1: 1-3, Q2: 4-6, Q3: 7-9, Q4: 10-12)
+                    const currentMonth = now.getMonth();
+                    const quarterStartMonth = Math.floor(currentMonth / 3) * 3;
+                    const quarterNumber = Math.floor(currentMonth / 3) + 1;
+                    
+                    startDate = new Date(now.getFullYear(), quarterStartMonth, 1);
+                    startDate.setHours(0, 0, 0, 0);
+                    
+                    endDate = new Date(now.getFullYear(), quarterStartMonth + 3, 0);
+                    endDate.setHours(23, 59, 59, 999);
+                    
+                    periodLabel = `Quý ${quarterNumber}/${now.getFullYear()}`;
+                    break;
+                }
+                
+                case 'year': {
+                    // Năm hiện tại
+                    startDate = new Date(now.getFullYear(), 0, 1);
+                    startDate.setHours(0, 0, 0, 0);
+                    
+                    endDate = new Date(now.getFullYear(), 11, 31);
+                    endDate.setHours(23, 59, 59, 999);
+                    
+                    periodLabel = `Năm ${now.getFullYear()}`;
+                    break;
+                }
+                
+                default: {
+                    return res.status(400).json({ 
+                        error: 'Range không hợp lệ. Chỉ chấp nhận: week, month, quarter, year' 
+                    });
+                }
+            }
+        } else if (!startDate && !endDate) {
+            // Nếu không có range và không có startDate/endDate, mặc định là tháng hiện tại
+            const now = new Date();
+            startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+            startDate.setHours(0, 0, 0, 0);
+            
+            endDate = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+            endDate.setHours(23, 59, 59, 999);
+            
+            periodLabel = `Tháng ${now.getMonth() + 1}/${now.getFullYear()}`;
+        } else {
+            // Xử lý startDate và endDate tùy chỉnh
+            if (startDate) {
+                startDate = new Date(startDate);
+                startDate.setHours(0, 0, 0, 0);
+            }
+            if (endDate) {
+                endDate = new Date(endDate);
+                endDate.setHours(23, 59, 59, 999);
+            }
+            periodLabel = 'Tùy chỉnh';
+        }
+
+        // Lấy danh sách userId của các thành viên trong family
+        const memberIds = family.members.map(m => m._id);
+
+        // Match condition cho tất cả giao dịch của family members
+        const match = {
+            userId: { $in: memberIds },
+            isDeleted: { $ne: true }
+        };
+
+        // Thêm filter theo ngày
         if (startDate || endDate) {
             match.date = {};
-            if (startDate) match.date.$gte = new Date(startDate);
-            if (endDate) match.date.$lte = new Date(endDate);
+            if (startDate) match.date.$gte = startDate;
+            if (endDate) match.date.$lte = endDate;
         }
+
+        // Tổng thu chi theo loại
         const totals = await Transaction.aggregate([
             { $match: match },
-            { $group: { _id: '$type', total: { $sum: '$amount' }, count: { $sum: 1 } } }
+            {
+                $group: {
+                    _id: '$type',
+                    total: { $sum: '$amount' },
+                    count: { $sum: 1 }
+                }
+            }
         ]);
-        const expByCategory = await Transaction.aggregate([
-            { $match: { ...match, type: 'expense' } },
-            { $group: { _id: '$categoryId', total: { $sum: '$amount' }, count: { $sum: 1 } } },
-            { $lookup: { from: 'categories', localField: '_id', foreignField: '_id', as: 'category' } },
-            { $unwind: { path: '$category', preserveNullAndEmptyArrays: true } },
-            { $project: { category: '$category.name', total: 1, count: 1 } },
-            { $sort: { total: -1 } }
+
+        // Thu chi theo member (cho biểu đồ cột)
+        const memberSummary = await Transaction.aggregate([
+            { $match: match },
+            {
+                $group: {
+                    _id: {
+                        userId: '$userId',
+                        type: '$type'
+                    },
+                    total: { $sum: '$amount' },
+                    count: { $sum: 1 }
+                }
+            },
+            {
+                $group: {
+                    _id: '$_id.userId',
+                    income: {
+                        $sum: {
+                            $cond: [
+                                { $eq: ['$_id.type', 'income'] },
+                                '$total',
+                                0
+                            ]
+                        }
+                    },
+                    expense: {
+                        $sum: {
+                            $cond: [
+                                { $eq: ['$_id.type', 'expense'] },
+                                '$total',
+                                0
+                            ]
+                        }
+                    },
+                    incomeCount: {
+                        $sum: {
+                            $cond: [
+                                { $eq: ['$_id.type', 'income'] },
+                                '$count',
+                                0
+                            ]
+                        }
+                    },
+                    expenseCount: {
+                        $sum: {
+                            $cond: [
+                                { $eq: ['$_id.type', 'expense'] },
+                                '$count',
+                                0
+                            ]
+                        }
+                    }
+                }
+            },
+            {
+                $lookup: {
+                    from: 'users',
+                    localField: '_id',
+                    foreignField: '_id',
+                    as: 'user'
+                }
+            },
+            { $unwind: '$user' },
+            {
+                $project: {
+                    _id: 0,
+                    userId: { $toString: '$_id' },
+                    username: '$user.username',
+                    email: '$user.email',
+                    avatar: '$user.avatar',
+                    income: 1,
+                    expense: 1,
+                    balance: { $subtract: ['$income', '$expense'] },
+                    incomeCount: 1,
+                    expenseCount: 1
+                }
+            },
+            { $sort: { expense: -1 } }
         ]);
-        const incByCategory = await Transaction.aggregate([
-            { $match: { ...match, type: 'income' } },
-            { $group: { _id: '$categoryId', total: { $sum: '$amount' }, count: { $sum: 1 } } },
-            { $lookup: { from: 'categories', localField: '_id', foreignField: '_id', as: 'category' } },
-            { $unwind: { path: '$category', preserveNullAndEmptyArrays: true } },
-            { $project: { category: '$category.name', total: 1, count: 1 } },
-            { $sort: { total: -1 } }
-        ]);
+
+        // Thu nhập theo danh mục
+        // const incByCategory = await Transaction.aggregate([
+        //     { $match: { ...match, type: 'income' } },
+        //     {
+        //         $group: {
+        //             _id: '$categoryId',
+        //             total: { $sum: '$amount' },
+        //             count: { $sum: 1 }
+        //         }
+        //     },
+        //     {
+        //         $lookup: {
+        //             from: 'categories',
+        //             localField: '_id',
+        //             foreignField: '_id',
+        //             as: 'category'
+        //         }
+        //     },
+        //     {
+        //         $unwind: {
+        //             path: '$category',
+        //             preserveNullAndEmptyArrays: true
+        //         }
+        //     },
+        //     {
+        //         $project: {
+        //             _id: 0,
+        //             categoryId: { $toString: '$_id' },
+        //             categoryName: { $ifNull: ['$category.name', 'Không phân loại'] },
+        //             total: 1,
+        //             count: 1
+        //         }
+        //     },
+        //     { $sort: { total: -1 } }
+        // ]);
+
         const totalExpense = totals.find(t => t._id === 'expense')?.total || 0;
         const totalIncome = totals.find(t => t._id === 'income')?.total || 0;
+
+        // Tính phần trăm cho income by category
+        incByCategory.forEach(item => {
+            item.percentage = totalIncome > 0 
+                ? Math.round((item.total / totalIncome) * 100 * 100) / 100 
+                : 0;
+        });
+
         res.json({
             message: 'Lấy báo cáo tổng chi tiêu gia đình thành công',
             data: {
-                totals: { expense: totalExpense, income: totalIncome },
-                expenseByCategory: expByCategory,
-                incomeByCategory: incByCategory
+                period: {
+                    startDate: startDate,
+                    endDate: endDate,
+                    range: range || 'custom',
+                    label: periodLabel
+                },
+                totals: {
+                    expense: totalExpense,
+                    income: totalIncome,
+                    balance: totalIncome - totalExpense,
+                    transactionCount: totals.reduce((sum, t) => sum + t.count, 0)
+                },
+                memberSummary: memberSummary,
+                // incomeByCategory: incByCategory
             }
         });
     } catch (error) {
@@ -649,26 +963,172 @@ export const getFamilyUserBreakdown = async (req, res) => {
         if (!user?.familyId) {
             return res.status(400).json({ error: 'Bạn chưa tham gia nhóm nào' });
         }
+
         const family = await Family.findById(user.familyId);
         if (!family || !family.isMember(req.userId)) {
             return res.status(403).json({ error: 'Không có quyền truy cập gia đình này' });
         }
+
         const { startDate, endDate } = req.query;
-        const match = { familyId: user.familyId, isShared: true, type: 'expense' };
+
+        const memberIds = family.members;
+
+        const match = {
+            userId: { $in: memberIds },
+            isDeleted: false
+        };
+
         if (startDate || endDate) {
             match.date = {};
             if (startDate) match.date.$gte = new Date(startDate);
             if (endDate) match.date.$lte = new Date(endDate);
         }
+        const totalCount = await Transaction.countDocuments(match);
+
         const breakdown = await Transaction.aggregate([
             { $match: match },
-            { $group: { _id: '$userId', total: { $sum: '$amount' }, count: { $sum: 1 } } },
-            { $lookup: { from: 'users', localField: '_id', foreignField: '_id', as: 'user' } },
-            { $unwind: '$user' },
-            { $project: { userId: { $toString: '$user._id' }, username: '$user.username', email: '$user.email', total: 1, count: 1 } },
-            { $sort: { total: -1 } }
+            {
+                $group: {
+                    _id: '$userId',
+                    totalExpense: {
+                        $sum: {
+                            $cond: [{ $eq: ['$type', 'expense'] }, '$amount', 0]
+                        }
+                    },
+                    expenseCount: {
+                        $sum: {
+                            $cond: [{ $eq: ['$type', 'expense'] }, 1, 0]
+                        }
+                    },
+                    totalIncome: {
+                        $sum: {
+                            $cond: [{ $eq: ['$type', 'income'] }, '$amount', 0]
+                        }
+                    },
+                    incomeCount: {
+                        $sum: {
+                            $cond: [{ $eq: ['$type', 'income'] }, 1, 0]
+                        }
+                    },
+                    totalTransactions: { $sum: 1 }
+                }
+            },
+            {
+                $lookup: {
+                    from: 'users',
+                    localField: '_id',
+                    foreignField: '_id',
+                    as: 'userInfo'
+                }
+            },
+            {
+                $unwind: {
+                    path: '$userInfo',
+                    preserveNullAndEmptyArrays: true
+                }
+            },
+            {
+                $project: {
+                    _id: 0,
+                    userId: { $toString: '$_id' },
+                    username: { $ifNull: ['$userInfo.username', 'Unknown User'] },
+                    email: { $ifNull: ['$userInfo.email', ''] },
+                    avatar: { $ifNull: ['$userInfo.avatar', ''] },
+                    expense: {
+                        total: '$totalExpense',
+                        count: '$expenseCount'
+                    },
+                    income: {
+                        total: '$totalIncome',
+                        count: '$incomeCount'
+                    },
+                    balance: { $subtract: ['$totalIncome', '$totalExpense'] },
+                    totalTransactions: 1
+                }
+            },
+            { $sort: { 'expense.total': -1 } }
         ]);
-        res.json({ message: 'Lấy phân tích theo thành viên thành công', data: breakdown });
+
+        let finalBreakdown = breakdown;
+        if (breakdown.length === 0) {
+            const members = await User.find({ _id: { $in: memberIds } })
+                .select('username email avatar')
+                .lean();
+
+            finalBreakdown = members.map(member => ({
+                userId: member._id.toString(),
+                username: member.username || 'Unknown User',
+                email: member.email || '',
+                avatar: member.avatar || '',
+                expense: {
+                    total: 0,
+                    count: 0
+                },
+                income: {
+                    total: 0,
+                    count: 0
+                },
+                balance: 0,
+                totalTransactions: 0
+            }));
+        }
+
+        const summary = {
+            totalExpense: finalBreakdown.reduce((sum, item) => sum + item.expense.total, 0),
+            totalIncome: finalBreakdown.reduce((sum, item) => sum + item.income.total, 0),
+            totalTransactions: finalBreakdown.reduce((sum, item) => sum + item.totalTransactions, 0),
+            memberCount: family.members.length
+        };
+        summary.familyBalance = summary.totalIncome - summary.totalExpense;
+
+        // Tạo data cho biểu đồ tròn - phân bổ chi tiêu theo thành viên
+        const expenseChartData = finalBreakdown
+            .filter(item => item.expense.total > 0) // Chỉ lấy members có chi tiêu
+            .map(item => ({
+                name: item.username,
+                value: item.expense.total,
+                percentage: summary.totalExpense > 0
+                    ? parseFloat(((item.expense.total / summary.totalExpense) * 100).toFixed(1))
+                    : 0,
+                userId: item.userId
+            }))
+            .sort((a, b) => b.value - a.value);
+
+        const incomeChartData = finalBreakdown
+            .filter(item => item.income.total > 0)
+            .map(item => ({
+                name: item.username,
+                value: item.income.total,
+                percentage: summary.totalIncome > 0
+                    ? parseFloat(((item.income.total / summary.totalIncome) * 100).toFixed(1))
+                    : 0,
+                userId: item.userId
+            }))
+            .sort((a, b) => b.value - a.value);
+
+        res.json({
+            message: 'Lấy phân tích theo thành viên thành công',
+            data: {
+                period: {
+                    startDate: startDate || null,
+                    endDate: endDate || null
+                },
+                summary,
+                breakdown: finalBreakdown,
+                charts: {
+                    expense: {
+                        title: 'Phân bổ chi tiêu theo thành viên',
+                        data: expenseChartData,
+                        total: summary.totalExpense
+                    },
+                    income: {
+                        title: 'Phân bổ thu nhập theo thành viên',
+                        data: incomeChartData,
+                        total: summary.totalIncome
+                    }
+                }
+            }
+        });
     } catch (error) {
         console.error('getFamilyUserBreakdown error:', error);
         res.status(500).json({ error: 'Lỗi server' });
@@ -681,27 +1141,137 @@ export const getFamilyTopCategories = async (req, res) => {
         if (!user?.familyId) {
             return res.status(400).json({ error: 'Bạn chưa tham gia nhóm nào' });
         }
+
         const family = await Family.findById(user.familyId);
         if (!family || !family.isMember(req.userId)) {
             return res.status(403).json({ error: 'Không có quyền truy cập gia đình này' });
         }
-        const { startDate, endDate, limit = '5' } = req.query;
-        const match = { familyId: user.familyId, isShared: true, type: 'expense' };
+
+        const { startDate, endDate, limit = '5', type = 'expense' } = req.query;
+
+        // Lấy transaction của tất cả members trong family (không cần isShared)
+        const memberIds = family.members;
+
+        const match = {
+            userId: { $in: memberIds },
+            isDeleted: false,
+            type: type // 'expense' hoặc 'income'
+        };
+
+        // Thêm filter theo thời gian nếu có
         if (startDate || endDate) {
             match.date = {};
             if (startDate) match.date.$gte = new Date(startDate);
             if (endDate) match.date.$lte = new Date(endDate);
         }
-        const top = await Transaction.aggregate([
+
+        console.log('Match condition:', JSON.stringify(match, null, 2));
+
+        // Aggregate để lấy top categories
+        const topCategories = await Transaction.aggregate([
             { $match: match },
-            { $group: { _id: '$categoryId', total: { $sum: '$amount' }, count: { $sum: 1 } } },
-            { $lookup: { from: 'categories', localField: '_id', foreignField: '_id', as: 'category' } },
-            { $unwind: { path: '$category', preserveNullAndEmptyArrays: true } },
-            { $project: { categoryId: { $cond: [{ $ifNull: ['$_id', false] }, { $toString: '$_id' }, null] }, category: '$category.name', total: 1, count: 1 } },
+            {
+                $group: {
+                    _id: '$categoryId',
+                    total: { $sum: '$amount' },
+                    count: { $sum: 1 }
+                }
+            },
+            {
+                $lookup: {
+                    from: 'categories',
+                    localField: '_id',
+                    foreignField: '_id',
+                    as: 'categoryInfo'
+                }
+            },
+            {
+                $unwind: {
+                    path: '$categoryInfo',
+                    preserveNullAndEmptyArrays: true
+                }
+            },
+            {
+                $project: {
+                    _id: 0,
+                    categoryId: {
+                        $cond: [
+                            { $ifNull: ['$_id', false] },
+                            { $toString: '$_id' },
+                            null
+                        ]
+                    },
+                    categoryName: {
+                        $ifNull: ['$categoryInfo.name', 'Không phân loại']
+                    },
+                    total: 1,
+                    count: 1,
+                    percentage: { $literal: 0 }
+                }
+            },
             { $sort: { total: -1 } },
-            { $limit: parseInt(limit) }
+            { $limit: parseInt(limit) || 5 }
         ]);
-        res.json({ message: 'Lấy top chi tiêu theo danh mục thành công', data: top });
+
+        console.log('Top categories result:', JSON.stringify(topCategories, null, 2));
+
+        // Tính tổng amount để tính percentage
+        const grandTotal = topCategories.reduce((sum, item) => sum + item.total, 0);
+
+        // Thêm percentage vào từng category
+        const topWithPercentage = topCategories.map(item => ({
+            ...item,
+            percentage: grandTotal > 0
+                ? parseFloat(((item.total / grandTotal) * 100).toFixed(1))
+                : 0
+        }));
+
+        // Tính tổng của TẤT CẢ categories (không chỉ top)
+        const allCategoriesTotal = await Transaction.aggregate([
+            { $match: match },
+            {
+                $group: {
+                    _id: null,
+                    total: { $sum: '$amount' },
+                    count: { $sum: 1 }
+                }
+            }
+        ]);
+
+        const summary = {
+            total: allCategoriesTotal[0]?.total || 0,
+            count: allCategoriesTotal[0]?.count || 0,
+            topCategoriesTotal: grandTotal,
+            categoryCount: topCategories.length
+        };
+
+        // Tạo data cho biểu đồ tròn
+        const chartData = topWithPercentage.map(item => ({
+            name: item.categoryName,
+            value: item.total,
+            percentage: item.percentage,
+            categoryId: item.categoryId
+        }));
+
+        res.json({
+            message: `Lấy top ${type === 'expense' ? 'chi tiêu' : 'thu nhập'} theo danh mục thành công`,
+            data: {
+                period: {
+                    startDate: startDate || null,
+                    endDate: endDate || null
+                },
+                type: type,
+                summary,
+                categories: topWithPercentage,
+                chart: {
+                    title: type === 'expense'
+                        ? 'Top danh mục chi tiêu'
+                        : 'Top danh mục thu nhập',
+                    data: chartData,
+                    total: grandTotal
+                }
+            }
+        });
     } catch (error) {
         console.error('getFamilyTopCategories error:', error);
         res.status(500).json({ error: 'Lỗi server' });
@@ -714,28 +1284,77 @@ export const getFamilyTopSpender = async (req, res) => {
         if (!user?.familyId) {
             return res.status(400).json({ error: 'Bạn chưa tham gia nhóm nào' });
         }
-        const family = await Family.findById(user.familyId);
+
+        const family = await Family.findById(user.familyId).populate('members', '_id');
         if (!family || !family.isMember(req.userId)) {
             return res.status(403).json({ error: 'Không có quyền truy cập gia đình này' });
         }
+
         const { startDate, endDate } = req.query;
-        const match = { familyId: user.familyId, isShared: true, type: 'expense' };
+
+        // Lấy danh sách userId của các thành viên trong family
+        const memberIds = family.members.map(m => m._id);
+
+        // Match condition
+        const match = {
+            userId: { $in: memberIds }, // Lọc theo thành viên trong family
+            type: 'expense',
+            isDeleted: { $ne: true } // Bỏ qua giao dịch đã xóa
+        };
+
+        // Thêm filter theo ngày nếu có
         if (startDate || endDate) {
             match.date = {};
-            if (startDate) match.date.$gte = new Date(startDate);
-            if (endDate) match.date.$lte = new Date(endDate);
+            if (startDate) {
+                match.date.$gte = new Date(startDate);
+            }
+            if (endDate) {
+                // Set time to end of day
+                const end = new Date(endDate);
+                end.setHours(23, 59, 59, 999);
+                match.date.$lte = end;
+            }
         }
+
         const top = await Transaction.aggregate([
             { $match: match },
-            { $group: { _id: '$userId', total: { $sum: '$amount' }, count: { $sum: 1 } } },
+            {
+                $group: {
+                    _id: '$userId',
+                    total: { $sum: '$amount' },
+                    count: { $sum: 1 }
+                }
+            },
             { $sort: { total: -1 } },
             { $limit: 1 },
-            { $lookup: { from: 'users', localField: '_id', foreignField: '_id', as: 'user' } },
+            {
+                $lookup: {
+                    from: 'users',
+                    localField: '_id',
+                    foreignField: '_id',
+                    as: 'user'
+                }
+            },
             { $unwind: '$user' },
-            { $project: { userId: { $toString: '$user._id' }, username: '$user.username', email: '$user.email', total: 1, count: 1 } }
+            {
+                $project: {
+                    _id: 0,
+                    userId: { $toString: '$user._id' },
+                    username: '$user.username',
+                    email: '$user.email',
+                    avatar: '$user.avatar',
+                    total: 1,
+                    count: 1
+                }
+            }
         ]);
+
         const result = top[0] || null;
-        res.json({ message: 'Lấy thành viên chi tiêu nhiều nhất thành công', data: result });
+
+        res.json({
+            message: 'Lấy thành viên chi tiêu nhiều nhất thành công',
+            data: result
+        });
     } catch (error) {
         console.error('getFamilyTopSpender error:', error);
         res.status(500).json({ error: 'Lỗi server' });
