@@ -424,7 +424,14 @@ export const deleteTransaction = async (req, res) => {
 
 export const getTransactionById = async (req, res) => {
     try {
-        const { transactionId } = req.params;
+        const { error: paramError, value: paramValue } = validateTransactionIdParam(req.params);
+        if (paramError) {
+            return res.status(400).json({
+                error: 'Invalid param',
+                details: paramError.details.map(d => ({ field: d.path.join('.'), message: d.message }))
+            });
+        }
+        const { transactionId } = paramValue;
         console.log(req.userId, transactionId, req.params);
         const transaction = await Transaction.findOne({ _id: transactionId, userId: req.userId })
             .populate('categoryId', 'name')
