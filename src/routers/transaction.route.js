@@ -11,7 +11,7 @@ transactionRouter.get("/", (req, res) => {
 })
 transactionRouter.get("/transactions", getTransactions)
 transactionRouter.get("/transactions/chart-data", getTransactionChartData)
-transactionRouter.get("/transactions/:transactionId([0-9a-fA-F]{24})", getTransactionById)
+transactionRouter.get("/transactions/:transactionId", getTransactionById)
 transactionRouter.post("/transactions", createTransaction)
 transactionRouter.put("/transactions/:transactionId", updateTransaction)
 transactionRouter.delete("/transactions/:transactionId", deleteTransaction)

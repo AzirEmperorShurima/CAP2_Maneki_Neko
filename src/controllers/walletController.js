@@ -547,12 +547,11 @@ export const transferBetweenWallets = async (req, res) => {
     // Lấy ví nguồn
     const fromWallet = await Wallet.findById(fromWalletId).session(session);
     if (!fromWallet) {
-      throw new Error('Không tìm thấy ví nguồn');
+      return res.status(404).json({ message: 'Không tìm thấy ví nguồn' });
     }
 
-    // Kiểm tra quyền giao dịch
     if (!fromWallet.canUserTransact(req.userId)) {
-      throw new Error('Bạn không có quyền chuyển tiền từ ví này');
+      return res.status(403).json({ message: 'Bạn không có quyền chuyển tiền từ ví này' });
     }
 
     let toWallet;
@@ -563,47 +562,45 @@ export const transferBetweenWallets = async (req, res) => {
       // Chỉ định ví đích cụ thể
       toWallet = await Wallet.findById(toWalletId).session(session);
       if (!toWallet) {
-        throw new Error('Không tìm thấy ví đích');
+        return res.status(404).json({ message: 'Không tìm thấy ví đích' });
       }
 
       // Xác định loại transfer
       if (!fromWallet.isShared && !toWallet.isShared) {
         if (!fromWallet.userId.equals(req.userId) || !toWallet.userId.equals(req.userId)) {
-          throw new Error('Chỉ có thể chuyển tiền giữa các ví cá nhân của chính mình');
+          return res.status(403).json({ message: 'Chỉ có thể chuyển tiền giữa các ví cá nhân của chính mình' });
         }
         transferType = 'personal_to_personal';
       } else if (fromWallet.isShared && !toWallet.isShared) {
         const family = await Family.findById(fromWallet.familyId);
         if (!family || !family.isAdmin(req.userId)) {
-          throw new Error('Chỉ admin gia đình mới có thể chuyển tiền từ ví gia đình');
+          return res.status(403).json({ message: 'Chỉ admin gia đình mới có thể chuyển tiền từ ví gia đình' });
         }
         if (!family.isMember(toWallet.userId)) {
-          throw new Error('Ví đích phải thuộc về thành viên của gia đình');
+          return res.status(403).json({ message: 'Ví đích phải thuộc về thành viên của gia đình' });
         }
         transferType = 'family_to_personal';
       } else if (!fromWallet.isShared && toWallet.isShared) {
         if (!fromWallet.userId.equals(req.userId)) {
-          throw new Error('Chỉ có thể chuyển từ ví cá nhân của chính mình');
+          return res.status(403).json({ message: 'Chỉ có thể chuyển từ ví cá nhân của chính mình' });
         }
         transferType = 'personal_to_family';
       } else {
-        throw new Error('Không hỗ trợ chuyển tiền giữa 2 ví gia đình');
+        return res.status(403).json({ message: 'Không hỗ trợ chuyển tiền giữa 2 ví gia đình' });
       }
 
     } else if (toUserId) {
-      // Chuyển cho user (tự động tạo ví nhận mặc định nếu cần)
-      // Chỉ cho phép family → member
       if (!fromWallet.isShared || !fromWallet.familyId) {
-        throw new Error('Chỉ có thể chuyển từ ví gia đình khi dùng toUserId');
+        return res.status(403).json({ message: 'Chỉ có thể chuyển từ ví gia đình khi dùng toUserId' });
       }
 
       const family = await Family.findById(fromWallet.familyId);
       if (!family || !family.isAdmin(req.userId)) {
-        throw new Error('Chỉ admin gia đình mới có thể chuyển tiền cho thành viên');
+        return res.status(403).json({ message: 'Chỉ admin gia đình mới có thể chuyển tiền cho thành viên' });
       }
 
       if (!family.isMember(toUserId)) {
-        throw new Error('User phải là thành viên của gia đình');
+        return res.status(403).json({ message: 'User phải là thành viên của gia đình' });
       }
 
       // Tạo hoặc lấy ví nhận mặc định
@@ -808,149 +805,149 @@ export const manageWalletAccess = async (req, res) => {
 };
 
 export const getWalletTransactions = async (req, res) => {
-    try {
-        const _user = await user.findById(req.userId);
-        if (!_user) return res.status(404).json({ error: 'User không tồn tại' });
+  try {
+    const _user = await user.findById(req.userId);
+    if (!_user) return res.status(404).json({ error: 'User không tồn tại' });
 
-        const { walletId } = req.params;
-        const page = Math.max(1, parseInt(req.query.page) || 1);
-        const limit = Math.min(100, parseInt(req.query.limit) || 20);
-        const skip = (page - 1) * limit;
-        const { type, startDate, endDate } = req.query;
+    const { walletId } = req.params;
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(100, parseInt(req.query.limit) || 20);
+    const skip = (page - 1) * limit;
+    const { type, startDate, endDate } = req.query;
 
-        const wallet = await Wallet.findOne({ _id: walletId, isActive: true });
-        if (!wallet) {
-            return res.status(404).json({ error: 'Ví không tồn tại hoặc đã bị vô hiệu hóa' });
-        }
-
-        if (!wallet.canUserView(req.userId)) {
-            return res.status(403).json({ error: 'Bạn không có quyền xem giao dịch của ví này' });
-        }
-
-        const baseMatch = { walletId: wallet._id, isDeleted: false };
-        if (startDate || endDate) {
-            baseMatch.date = {};
-            if (startDate) baseMatch.date.$gte = new Date(startDate);
-            if (endDate) baseMatch.date.$lte = new Date(endDate);
-        }
-
-        const normalize = (t) => {
-            const plain = t.toObject();
-            return {
-                id: plain._id,
-                amount: plain.amount,
-                type: plain.type,
-                expense_for: plain.expense_for || '',
-                date: plain.date,
-                description: plain.description || '',
-                isShared: plain.isShared || false,
-                isOwner: plain.userId?._id?.toString() === req.userId.toString(),
-                owner: plain.userId ? {
-                    id: plain.userId._id,
-                    username: plain.userId.username || 'Không tên',
-                    avatar: plain.userId.avatar || null
-                } : null,
-                category: plain.categoryId ? {
-                    id: plain.categoryId._id,
-                    name: plain.categoryId.name,
-                } : { name: 'Không xác định' },
-                wallet: plain.walletId ? {
-                    id: plain.walletId._id,
-                    name: plain.walletId.name,
-                    balance: plain.walletId.balance,
-                    scope: plain.walletId.scope,
-                    type: plain.walletId.type,
-                    icon: plain.walletId.icon
-                } : null
-            };
-        };
-
-        if (type && ['income', 'expense'].includes(type)) {
-            const match = { ...baseMatch, type };
-
-            const [transactions, total] = await Promise.all([
-                Transaction.find(match)
-                    .populate('categoryId', 'name')
-                    .populate('userId', 'username avatar')
-                    .populate('walletId', 'name balance scope type icon')
-                    .sort({ date: -1 })
-                    .skip(skip)
-                    .limit(limit),
-                Transaction.countDocuments(match)
-            ]);
-
-            const result = transactions.map(normalize);
-            return res.json({
-                message: 'Lấy giao dịch theo ví thành công',
-                data: {
-                    wallet: { id: wallet._id, name: wallet.name, balance: wallet.balance },
-                    transactions: result,
-                    pagination: {
-                        page,
-                        limit,
-                        total,
-                        totalPages: Math.ceil(total / limit),
-                        hasNext: page < Math.ceil(total / limit)
-                    }
-                }
-            });
-        }
-
-        const matchIncome = { ...baseMatch, type: 'income' };
-        const matchExpense = { ...baseMatch, type: 'expense' };
-
-        const [incomeList, incomeTotal, expenseList, expenseTotal] = await Promise.all([
-            transaction.find(matchIncome)
-                .populate('categoryId', 'name')
-                .populate('userId', 'username avatar')
-                .populate('walletId', 'name balance scope type icon')
-                .sort({ date: -1 })
-                .skip(skip)
-                .limit(limit),
-            transaction.countDocuments(matchIncome),
-            transaction.find(matchExpense)
-                .populate('categoryId', 'name')
-                .populate('userId', 'username avatar')
-                .populate('walletId', 'name balance scope type icon')
-                .sort({ date: -1 })
-                .skip(skip)
-                .limit(limit),
-            transaction.countDocuments(matchExpense)
-        ]);
-
-        const income = incomeList.map(normalize);
-        const expense = expenseList.map(normalize);
-
-        return res.json({
-            message: 'Lấy danh sách income/expense theo ví thành công',
-            data: {
-                wallet: { id: wallet._id, name: wallet.name, balance: wallet.balance },
-                income: {
-                    items: income,
-                    pagination: {
-                        page,
-                        limit,
-                        total: incomeTotal,
-                        totalPages: Math.ceil(incomeTotal / limit),
-                        hasNext: page < Math.ceil(incomeTotal / limit)
-                    }
-                },
-                expense: {
-                    items: expense,
-                    pagination: {
-                        page,
-                        limit,
-                        total: expenseTotal,
-                        totalPages: Math.ceil(expenseTotal / limit),
-                        hasNext: page < Math.ceil(expenseTotal / limit)
-                    }
-                }
-            }
-        });
-    } catch (error) {
-        console.error('Lỗi lấy giao dịch theo ví:', error);
-        res.status(500).json({ error: 'Lỗi server' });
+    const wallet = await Wallet.findOne({ _id: walletId, isActive: true });
+    if (!wallet) {
+      return res.status(404).json({ error: 'Ví không tồn tại hoặc đã bị vô hiệu hóa' });
     }
+
+    if (!wallet.canUserView(req.userId)) {
+      return res.status(403).json({ error: 'Bạn không có quyền xem giao dịch của ví này' });
+    }
+
+    const baseMatch = { walletId: wallet._id, isDeleted: false };
+    if (startDate || endDate) {
+      baseMatch.date = {};
+      if (startDate) baseMatch.date.$gte = new Date(startDate);
+      if (endDate) baseMatch.date.$lte = new Date(endDate);
+    }
+
+    const normalize = (t) => {
+      const plain = t.toObject();
+      return {
+        id: plain._id,
+        amount: plain.amount,
+        type: plain.type,
+        expense_for: plain.expense_for || '',
+        date: plain.date,
+        description: plain.description || '',
+        isShared: plain.isShared || false,
+        isOwner: plain.userId?._id?.toString() === req.userId.toString(),
+        owner: plain.userId ? {
+          id: plain.userId._id,
+          username: plain.userId.username || 'Không tên',
+          avatar: plain.userId.avatar || null
+        } : null,
+        category: plain.categoryId ? {
+          id: plain.categoryId._id,
+          name: plain.categoryId.name,
+        } : { name: 'Không xác định' },
+        wallet: plain.walletId ? {
+          id: plain.walletId._id,
+          name: plain.walletId.name,
+          balance: plain.walletId.balance,
+          scope: plain.walletId.scope,
+          type: plain.walletId.type,
+          icon: plain.walletId.icon
+        } : null
+      };
+    };
+
+    if (type && ['income', 'expense'].includes(type)) {
+      const match = { ...baseMatch, type };
+
+      const [transactions, total] = await Promise.all([
+        Transaction.find(match)
+          .populate('categoryId', 'name')
+          .populate('userId', 'username avatar')
+          .populate('walletId', 'name balance scope type icon')
+          .sort({ date: -1 })
+          .skip(skip)
+          .limit(limit),
+        Transaction.countDocuments(match)
+      ]);
+
+      const result = transactions.map(normalize);
+      return res.json({
+        message: 'Lấy giao dịch theo ví thành công',
+        data: {
+          wallet: { id: wallet._id, name: wallet.name, balance: wallet.balance },
+          transactions: result,
+          pagination: {
+            page,
+            limit,
+            total,
+            totalPages: Math.ceil(total / limit),
+            hasNext: page < Math.ceil(total / limit)
+          }
+        }
+      });
+    }
+
+    const matchIncome = { ...baseMatch, type: 'income' };
+    const matchExpense = { ...baseMatch, type: 'expense' };
+
+    const [incomeList, incomeTotal, expenseList, expenseTotal] = await Promise.all([
+      transaction.find(matchIncome)
+        .populate('categoryId', 'name')
+        .populate('userId', 'username avatar')
+        .populate('walletId', 'name balance scope type icon')
+        .sort({ date: -1 })
+        .skip(skip)
+        .limit(limit),
+      transaction.countDocuments(matchIncome),
+      transaction.find(matchExpense)
+        .populate('categoryId', 'name')
+        .populate('userId', 'username avatar')
+        .populate('walletId', 'name balance scope type icon')
+        .sort({ date: -1 })
+        .skip(skip)
+        .limit(limit),
+      transaction.countDocuments(matchExpense)
+    ]);
+
+    const income = incomeList.map(normalize);
+    const expense = expenseList.map(normalize);
+
+    return res.json({
+      message: 'Lấy danh sách income/expense theo ví thành công',
+      data: {
+        wallet: { id: wallet._id, name: wallet.name, balance: wallet.balance },
+        income: {
+          items: income,
+          pagination: {
+            page,
+            limit,
+            total: incomeTotal,
+            totalPages: Math.ceil(incomeTotal / limit),
+            hasNext: page < Math.ceil(incomeTotal / limit)
+          }
+        },
+        expense: {
+          items: expense,
+          pagination: {
+            page,
+            limit,
+            total: expenseTotal,
+            totalPages: Math.ceil(expenseTotal / limit),
+            hasNext: page < Math.ceil(expenseTotal / limit)
+          }
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Lỗi lấy giao dịch theo ví:', error);
+    res.status(500).json({ error: 'Lỗi server' });
+  }
 };
 
 export const payDebt = async (req, res) => {
