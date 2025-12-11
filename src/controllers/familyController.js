@@ -177,7 +177,7 @@ export const sendInviteEmail = async (req, res) => {
                 deepLink,
                 userExists: userExistsBool,
             }).catch(() => {
-                console.error('Error sending email:', error);
+                console.log('Error sending email:', error);
             });
         });
 
@@ -690,68 +690,68 @@ export const getFamilySpendingSummary = async (req, res) => {
         // Nếu có range, tính startDate và endDate theo range
         if (range) {
             const now = new Date();
-            
+
             switch (range.toLowerCase()) {
                 case 'week': {
                     // Tuần hiện tại (Thứ 2 đến Chủ nhật)
                     const dayOfWeek = now.getDay(); // 0 = Chủ nhật, 1 = Thứ 2, ...
                     const diffToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
-                    
+
                     startDate = new Date(now);
                     startDate.setDate(now.getDate() + diffToMonday);
                     startDate.setHours(0, 0, 0, 0);
-                    
+
                     endDate = new Date(startDate);
                     endDate.setDate(startDate.getDate() + 6);
                     endDate.setHours(23, 59, 59, 999);
-                    
+
                     periodLabel = 'Tuần này';
                     break;
                 }
-                
+
                 case 'month': {
                     // Tháng hiện tại
                     startDate = new Date(now.getFullYear(), now.getMonth(), 1);
                     startDate.setHours(0, 0, 0, 0);
-                    
+
                     endDate = new Date(now.getFullYear(), now.getMonth() + 1, 0);
                     endDate.setHours(23, 59, 59, 999);
-                    
+
                     periodLabel = `Tháng ${now.getMonth() + 1}/${now.getFullYear()}`;
                     break;
                 }
-                
+
                 case 'quarter': {
                     // Quý hiện tại (Q1: 1-3, Q2: 4-6, Q3: 7-9, Q4: 10-12)
                     const currentMonth = now.getMonth();
                     const quarterStartMonth = Math.floor(currentMonth / 3) * 3;
                     const quarterNumber = Math.floor(currentMonth / 3) + 1;
-                    
+
                     startDate = new Date(now.getFullYear(), quarterStartMonth, 1);
                     startDate.setHours(0, 0, 0, 0);
-                    
+
                     endDate = new Date(now.getFullYear(), quarterStartMonth + 3, 0);
                     endDate.setHours(23, 59, 59, 999);
-                    
+
                     periodLabel = `Quý ${quarterNumber}/${now.getFullYear()}`;
                     break;
                 }
-                
+
                 case 'year': {
                     // Năm hiện tại
                     startDate = new Date(now.getFullYear(), 0, 1);
                     startDate.setHours(0, 0, 0, 0);
-                    
+
                     endDate = new Date(now.getFullYear(), 11, 31);
                     endDate.setHours(23, 59, 59, 999);
-                    
+
                     periodLabel = `Năm ${now.getFullYear()}`;
                     break;
                 }
-                
+
                 default: {
-                    return res.status(400).json({ 
-                        error: 'Range không hợp lệ. Chỉ chấp nhận: week, month, quarter, year' 
+                    return res.status(400).json({
+                        error: 'Range không hợp lệ. Chỉ chấp nhận: week, month, quarter, year'
                     });
                 }
             }
@@ -760,10 +760,10 @@ export const getFamilySpendingSummary = async (req, res) => {
             const now = new Date();
             startDate = new Date(now.getFullYear(), now.getMonth(), 1);
             startDate.setHours(0, 0, 0, 0);
-            
+
             endDate = new Date(now.getFullYear(), now.getMonth() + 1, 0);
             endDate.setHours(23, 59, 59, 999);
-            
+
             periodLabel = `Tháng ${now.getMonth() + 1}/${now.getFullYear()}`;
         } else {
             // Xử lý startDate và endDate tùy chỉnh
@@ -927,8 +927,8 @@ export const getFamilySpendingSummary = async (req, res) => {
 
         // Tính phần trăm cho income by category
         incByCategory.forEach(item => {
-            item.percentage = totalIncome > 0 
-                ? Math.round((item.total / totalIncome) * 100 * 100) / 100 
+            item.percentage = totalIncome > 0
+                ? Math.round((item.total / totalIncome) * 100 * 100) / 100
                 : 0;
         });
 
