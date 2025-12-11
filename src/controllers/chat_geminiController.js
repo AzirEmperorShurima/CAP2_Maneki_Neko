@@ -4,6 +4,7 @@ import Budget from '../models/budget.js';
 import Wallet from '../models/wallet.js';
 import Goal from '../models/goal.js';
 import { geminiChat } from '../utils/gemini.js';
+import { analyzeBillComplete } from '../utils/geminiVision.js';
 import dayjs from 'dayjs';
 import 'dayjs/locale/vi.js';
 import { checkBudgetWarning } from '../utils/budget.js';
@@ -34,6 +35,7 @@ const updateGoalProgressFromTransaction = async (transaction, userId) => {
     console.error('Lỗi cập nhật tiến độ goal từ giao dịch:', error);
   }
 };
+
 const calculatePeriodDates = (period, customStart, customEnd) => {
   const now = dayjs();
 
@@ -79,20 +81,229 @@ const findParentBudget = async (userId, childPeriod, periodStart, periodEnd) => 
 
   return parentBudget;
 };
+
+/**
+ * UNIFIED CONTROLLER - Xử lý cả TEXT CHAT và BILL UPLOAD
+ */
 export const geminiChatController = async (req, res) => {
   try {
-    const { message } = req.body;
+    const message = (req.body && typeof req.body.message === 'string') ? req.body.message : '';
+    const uploadedFiles = req.uploadedFiles; // Từ billUploadMiddleware
+
+    // ===== MODE 1: UPLOAD BILL WITH IMAGE =====
+    if (uploadedFiles && (uploadedFiles.billImage || uploadedFiles.voice)) {
+      return await handleBillUpload(req, res, uploadedFiles, message);
+    }
+
+    // ===== MODE 2: TEXT CHAT =====
+    return await handleTextChat(req, res, message);
+
+  } catch (error) {
+    console.error('❌ Lỗi trong geminiChatController:', error);
+    res.status(500).json({
+      message: 'Ôi không, mình bị lỗi rồi. Thử lại sau vài giây nhé!',
+      data: { error: error.message }
+    });
+  }
+};
+
+/**
+ * Xử lý upload bill và tự động tạo transaction
+ */
+async function handleBillUpload(req, res, uploadedFiles, userMessage) {
+  try {
+    const { billImage, voice } = uploadedFiles;
+    const manualAmount = req.body && req.body.manualAmount ? Number(req.body.manualAmount) : undefined;
+    const manualCategory = req.body && typeof req.body.manualCategory === 'string' ? req.body.manualCategory : undefined;
+
+    console.log('📸 Đang phân tích bill...');
+
+    // Lấy categories
+    const categories = await Category.find({ userId: req.userId });
+    const categoriesPayload = categories.map(c => ({
+      id: c._id,
+      name: c.name,
+      type: c.type,
+    }));
+
+    let billAnalysis;
+    try {
+      const imageUrl = billImage?.url || null;
+      billAnalysis = await analyzeBillComplete(
+        imageUrl,
+        voice?.url || null,
+        categoriesPayload
+      );
+    } catch (error) {
+      return res.json({
+        message: 'Hmm, mình không đọc được bill này rõ lắm. Bạn có thể nhập thủ công không?',
+        data: {
+          requireManualInput: true,
+          billImage: billImage ? {
+            url: billImage.url,
+            thumbnail: billImage.thumbnail,
+            publicId: billImage.publicId
+          } : null,
+          voice: voice ? {
+            url: voice.url,
+            publicId: voice.publicId
+          } : null
+        }
+      });
+    }
+
+    // Kiểm tra confidence
+    if (billAnalysis.confidence < 0.6) {
+      return res.json({
+        message: `Mình chỉ đọc được khoảng ${(billAnalysis.confidence * 100).toFixed(0)}% thôi. Bạn kiểm tra lại giúp mình nhé!`,
+        data: {
+          requireManualInput: true,
+          suggestion: billAnalysis,
+          billImage: {
+            url: billImage.url,
+            thumbnail: billImage.thumbnail,
+            publicId: billImage.publicId
+          },
+          voice: voice ? {
+            url: voice.url,
+            publicId: voice.publicId,
+            transcript: billAnalysis.voiceTranscript
+          } : null
+        }
+      });
+    }
+
+    const finalAmount = manualAmount || billAnalysis.amount;
+    const finalCategoryName = manualCategory || billAnalysis.category_name;
+    const finalType = billAnalysis.type;
+
+    let category = await Category.findOne({
+      name: { $regex: new RegExp(`^${escapeRegExp(finalCategoryName)}$`, 'i') },
+      type: finalType,
+      userId: req.userId
+    });
+
+    if (!category) {
+      category = await Category.create({
+        name: finalCategoryName,
+        type: finalType,
+        keywords: finalCategoryName.toLowerCase().split(/\s+/),
+        scope: 'personal',
+        userId: req.userId
+      });
+    }
+
+    // Tạo transaction
+    const transaction = await Transaction.create({
+      userId: req.userId,
+      amount: finalAmount,
+      categoryId: category._id,
+      type: finalType,
+      inputType: 'bill_scan',
+      description: userMessage || billAnalysis.description || `${billAnalysis.merchant || 'Thanh toán'}`,
+      date: billAnalysis.date ? dayjs(billAnalysis.date).toDate() : new Date(),
+      source: 'bill-upload',
+
+      // Metadata từ bill
+      billMetadata: {
+        imageUrl: billImage?.url || null,
+        thumbnail: billImage?.thumbnail || null,
+        publicId: billImage?.publicId || null,
+        merchant: billAnalysis.merchant,
+        items: billAnalysis.items || [],
+        confidence: billAnalysis.confidence,
+        voiceUrl: voice?.url || null,
+        voicePublicId: voice?.publicId || null,
+        voiceTranscript: billAnalysis.voiceTranscript || null,
+        analyzedAt: new Date()
+      },
+
+      rawText: billAnalysis.voiceTranscript || userMessage || billAnalysis.description,
+      confidence: billAnalysis.confidence,
+    });
+
+    // Cập nhật goal nếu là income
+    if (transaction.type === 'income' && transaction.walletId) {
+      await updateGoalProgressFromTransaction(transaction, req.userId);
+    }
+
+    // Check budget warning
+    const warning = checkBudgetWarning?.(req.userId, transaction);
+
+    // Tạo reply message
+    const typeText = finalType === 'income' ? 'thu nhập' : 'chi tiêu';
+    let reply = `✅ Đã ghi **${finalAmount.toLocaleString()}đ** ${typeText} vào **${category.name}**`;
+
+    if (billAnalysis.merchant) {
+      reply += ` tại **${billAnalysis.merchant}**`;
+    }
+
+    if (warning) {
+      reply += `\n\n⚠️ ${warning}`;
+    }
+
+    // Thêm joke
+    const jokePool = finalType === 'income' ? chat_joke.income : chat_joke.bigSpending;
+    const jokeMessage = jokePool?.[Math.floor(Math.random() * jokePool.length)] || null;
+
+    return res.json({
+      message: reply,
+      data: {
+        transaction: {
+          id: transaction._id,
+          amount: transaction.amount,
+          type: transaction.type,
+          category: {
+            id: category._id,
+            name: category.name,
+          },
+          merchant: billAnalysis.merchant,
+          confidence: billAnalysis.confidence
+        },
+        billImage: billImage ? {
+          url: billImage.url,
+          thumbnail: billImage.thumbnail,
+          publicId: billImage.publicId
+        } : null,
+        voice: voice ? {
+          url: voice.url,
+          publicId: voice.publicId,
+          transcript: billAnalysis.voiceTranscript
+        } : null,
+        items: billAnalysis.items,
+        jokeMessage
+      }
+    });
+
+  } catch (error) {
+    console.error('Lỗi handleBillUpload:', error);
+    throw error;
+  }
+}
+
+/**
+ * Xử lý chat text thông thường
+ */
+async function handleTextChat(req, res, message) {
+  try {
     if (!message?.trim()) {
       return res.status(400).json({ error: 'Tin nhắn không được để trống' });
     }
+
     const categories = await Category.find({ userId: req.userId });
     const categoriesPayload = categories.map(category => ({
       id: category._id,
       name: category.name,
       type: category.type,
     }));
+
     const chatPayload = [
-      { role: 'user', parts: [{ text: `${SYSTEM_PROMPT}\n\n"message": ${message}\n\n"categories for transaction": ${JSON.stringify(categoriesPayload)}` }] }
+      {
+        role: 'user',
+        parts: [{
+          text: `${SYSTEM_PROMPT}\n\n"message": ${message}\n\n"categories for transaction": ${JSON.stringify(categoriesPayload)}`
+        }]
+      }
     ];
 
     const result = await geminiChat(chatPayload);
@@ -167,7 +378,6 @@ export const geminiChatController = async (req, res) => {
       const typeText = data.type === 'income' ? 'thu nhập' : 'chi tiêu';
       reply += `Đã ghi **${data.amount.toLocaleString()}đ** ${typeText} vào **${category.name}**.`;
 
-      // Kiểm tra cảnh báo ngân sách
       const warning = checkBudgetWarning?.(req.userId, trans);
       if (warning) reply += `\n${warning}`;
 
@@ -176,7 +386,6 @@ export const geminiChatController = async (req, res) => {
         jokeMessage = jokePool[Math.floor(Math.random() * jokePool.length)];
       }
 
-      // Cập nhật tiến độ goal nếu giao dịch là thu nhập và có walletId
       if (trans.type === 'income') {
         await updateGoalProgressFromTransaction(trans, req.userId);
       }
@@ -187,7 +396,6 @@ export const geminiChatController = async (req, res) => {
     // ==================================================================
     else if (data.action === 'set_budget') {
       try {
-        // Tìm category nếu có
         const categoryId = data.category_name
           ? (await Category.findOne({
             name: { $regex: new RegExp(`^${escapeRegExp(data.category_name)}$`, 'i') }
@@ -196,7 +404,6 @@ export const geminiChatController = async (req, res) => {
 
         const { periodStart, periodEnd } = calculatePeriodDates(data.period);
 
-        // Tìm budget cha nếu có thể
         let parentBudgetId = null;
         const parentBudget = await findParentBudget(req.userId, data.period, periodStart, periodEnd);
 
@@ -204,7 +411,6 @@ export const geminiChatController = async (req, res) => {
           parentBudgetId = parentBudget._id;
         }
 
-        // Kiểm tra xem đã có budget cho khoảng thời gian này chưa
         const existingBudget = await Budget.findOne({
           userId: req.userId,
           type: data.period,
@@ -216,12 +422,10 @@ export const geminiChatController = async (req, res) => {
 
         let budget;
         if (existingBudget) {
-          // Nếu đã có budget cho khoảng thời gian này, cập nhật số tiền
           existingBudget.amount = data.amount;
           budget = await existingBudget.save();
           reply = `Đã cập nhật ngân sách ${data.category_name ? `cho ${data.category_name}` : 'tổng'} cho khoảng thời gian này thành ${data.amount.toLocaleString()}đ.`;
         } else {
-          // Tạo budget mới
           budget = new Budget({
             userId: req.userId,
             type: data.period,
@@ -238,7 +442,6 @@ export const geminiChatController = async (req, res) => {
           reply = `Đã đặt ngân sách ${data.category_name ? `cho ${data.category_name}` : 'tổng'} ${data.amount.toLocaleString()}đ cho ${data.period}.`;
         }
 
-        // Thông báo nếu có budget cha
         if (parentBudgetId) {
           const parentBudget = await Budget.findById(parentBudgetId).populate('categoryId');
           const parentPeriodText = parentBudget.type === 'monthly' ? 'tháng' : parentBudget.type === 'weekly' ? 'tuần' : 'ngày';
@@ -270,7 +473,7 @@ export const geminiChatController = async (req, res) => {
         existingGoal.deadline = dayjs(data.deadline).toDate();
         existingGoal.isActive = true;
         existingGoal.status = 'active';
-        existingGoal.currentProgress = 0; // Reset tiến độ khi cập nhật
+        existingGoal.currentProgress = 0;
         goal = await existingGoal.save();
         reply = `Đã cập nhật mục tiêu **${data.goal_name}**`;
       } else {
@@ -290,7 +493,6 @@ export const geminiChatController = async (req, res) => {
       const deadlineStr = dayjs(goal.deadline).format('DD/MM/YYYY');
       reply += `: **${data.target_amount.toLocaleString()}đ** trước ngày **${deadlineStr}**.`;
 
-      // Kiểm tra ví liên kết
       if (goal.associatedWallets && goal.associatedWallets.length > 0) {
         const wallets = await Wallet.find({ _id: { $in: goal.associatedWallets } }).select('name');
         const walletList = wallets.map(w => w.name).join(', ');
@@ -374,17 +576,16 @@ export const geminiChatController = async (req, res) => {
       reply = data.reply;
     }
     else {
-      reply = `${data.reply || 'Mình chưa hiểu yêu cầu này.'
-        }\n\nBạn có thể thử:\n` +
+      reply = `${data.reply || 'Mình chưa hiểu yêu cầu này.'}\n\nBạn có thể thử:\n` +
         '• Ghi giao dịch: "cơm 35k", "lương 25tr"\n' +
         '• Đặt ngân sách: "ngân sách ăn uống 5tr/tháng"\n' +
         '• Tạo mục tiêu: "mục tiêu du lịch 30tr trong 6 tháng"\n' +
         '• Thêm tiền: "thêm 2tr vào mục tiêu du lịch"\n' +
-        '• Liên kết ví: "liên kết ví tiết kiệm với mục tiêu du lịch"';
+        '• Liên kết ví: "liên kết ví tiết kiệm với mục tiêu du lịch"\n' +
+        '• Hoặc **chụp ảnh bill** để mình tự động ghi cho bạn!';
     }
 
-    // Trả về kết quả
-    res.json({
+    return res.json({
       message: reply.trim(),
       data: {
         transaction: transaction || null,
@@ -393,15 +594,10 @@ export const geminiChatController = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Lỗi trong geminiChatController:', error);
-    res.status(500).json({
-      message: 'Ôi không, mình bị lỗi rồi. Thử lại sau vài giây nhé!',
-      data: {
-        error: error.message
-      }
-    });
+    console.error('Lỗi handleTextChat:', error);
+    throw error;
   }
-};
+}
 
 // Hàm hỗ trợ escape regex
 function escapeRegExp(string) {

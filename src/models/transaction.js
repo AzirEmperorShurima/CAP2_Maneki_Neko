@@ -7,10 +7,10 @@ const transactionSchema = new mongoose.Schema({
         ref: 'User',
         required: true
     },
-    walletId: { // THÊM TRƯỜNG NÀY
+    walletId: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Wallet',
-        required: false // Không bắt buộc, vì có thể ghi giao dịch không từ ví cụ thể
+        required: false
     },
     amount: {
         type: Number,
@@ -68,10 +68,31 @@ const transactionSchema = new mongoose.Schema({
     // Voice & OCR input
     inputType: {
         type: String,
-        enum: ["manual", "voice", "ocr", "ai"],
+        enum: ["manual", "voice", "bill_scan", "ai", "manual_corrected"],
         default: 'manual'
     },
-    ocrText: { type: String },
+    billMetadata: {
+        imageUrl: String,
+        thumbnail: String,
+        publicId: String,
+
+        merchant: String,
+        items: [{
+            name: String,
+            quantity: Number,
+            price: Number
+        }],
+        confidence: Number,
+        voiceUrl: String,
+        voicePublicId: String,
+        voiceTranscript: String,
+
+        analyzedAt: Date,
+        correctedManually: {
+            type: Boolean,
+            default: false
+        }
+    },
     voiceText: { type: String },
     rawText: { type: String }, // bản gốc
     confidence: {

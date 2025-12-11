@@ -477,9 +477,8 @@ export const getTransactions = async (req, res) => {
         const limit = Math.min(100, parseInt(req.query.limit) || 20);
         const skip = (page - 1) * limit;
 
-        const { type, search, startDate, endDate } = req.query;
+        const { type, search, startDate, endDate, month } = req.query;
 
-        // Base match để lấy tất cả transaction của user và transaction chia sẻ trong family
         let match = {
             $or: [
                 { userId: _user._id },
@@ -487,12 +486,23 @@ export const getTransactions = async (req, res) => {
             ]
         };
 
-        // Chỉ thêm các điều kiện lọc khi chúng được cung cấp và có giá trị hợp lệ
         if (type && ['income', 'expense'].includes(type)) {
             match.type = type;
         }
 
-        if (startDate || endDate) {
+        const monthStr = typeof month === 'string' ? month.trim() : '';
+        if (monthStr) {
+            const parts = monthStr.split('-');
+            const y = parseInt(parts[0], 10);
+            const m = parseInt(parts[1], 10) - 1;
+            if (!Number.isNaN(y) && !Number.isNaN(m) && m >= 0 && m < 12) {
+                const start = new Date(y, m, 1, 0, 0, 0, 0);
+                const end = new Date(y, m + 1, 0, 23, 59, 59, 999);
+                match.date = { $gte: start, $lte: end };
+            }
+        }
+
+        if (!match.date && (startDate || endDate)) {
             match.date = {};
             if (startDate) {
                 match.date.$gte = new Date(startDate);
@@ -502,7 +512,6 @@ export const getTransactions = async (req, res) => {
             }
         }
 
-        // Xử lý tìm kiếm
         if (search && search.trim()) {
             const regex = { $regex: search.trim(), $options: 'i' };
             const searchCondition = {
@@ -512,10 +521,7 @@ export const getTransactions = async (req, res) => {
                     { ocrText: regex }
                 ]
             };
-
-            // Nếu đã có điều kiện khác, thêm search condition vào match
-            // Nếu chưa có điều kiện khác, chỉ sử dụng search condition
-            if (Object.keys(match).length > 1) { // > 1 vì đã có $or base
+            if (Object.keys(match).length > 1) {
                 match.$and = [
                     match,
                     searchCondition

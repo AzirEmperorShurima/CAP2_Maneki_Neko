@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { chat } from "../controllers/chatController.js";
 import { geminiChatController } from "../controllers/chat_geminiController.js";
+import { billUploadMiddleware } from "../middlewares/cloudinary.js";
 
 const chatRouter = Router()
 // chatRouter.use(jwtAuth)
@@ -14,7 +15,7 @@ chatRouter.get("/", (req, res) => {
     })
 })
 chatRouter.post('/old-chat', chat)
-chatRouter.post('/gemini-chat', geminiChatController)
-chatRouter.post('/gemini', geminiChatController)
+chatRouter.post('/gemini-chat', billUploadMiddleware, geminiChatController)
+chatRouter.post('/gemini', billUploadMiddleware, geminiChatController)
 
 export default chatRouter
