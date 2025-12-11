@@ -19,6 +19,9 @@ export const createCategory = async (req, res) => {
         familyId: _user.familyId || null,
         isDefault: scope === 'system',
     });
+    if (req.uploadedCategoryImage && req.uploadedCategoryImage.url) {
+        _category.image = req.uploadedCategoryImage.url;
+    }
     await _category.save();
 
     res.json({ message: 'Tạo danh mục thành công', data: _category });
@@ -57,6 +60,7 @@ export const updateCategory = async (req, res) => {
         const update = {};
         if (typeof name === 'string') update.name = name.trim();
         if (type === 'income' || type === 'expense') update.type = type;
+        if (req.uploadedCategoryImage && req.uploadedCategoryImage.url) update.image = req.uploadedCategoryImage.url;
 
         if (_category.scope === 'personal') update.userId = _category.userId;
         if (_category.scope === 'family') update.familyId = _category.familyId;
@@ -105,7 +109,7 @@ export const getCategories = async (req, res) => {
         }
 
         const categories = await category.find(match)
-            .select('_id name type scope userId familyId isDefault')
+            .select('_id name type scope userId familyId isDefault image')
             .sort({ scope: 1, name: 1 })
             .lean();
         const normalizedCategories = categories.map(cat => {

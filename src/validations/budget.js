@@ -10,6 +10,7 @@ export const getBudgetsQuerySchema = Joi.object({
 
 export const validateCreateBudget = (data) => {
   const schema = Joi.object({
+    name: Joi.string().required(),
     type: Joi.string().valid('daily', 'weekly', 'monthly').required(),
     amount: Joi.number().min(0).required(),
     categoryId: objectId.optional().allow(null),

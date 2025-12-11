@@ -11,7 +11,7 @@ const fileFilter = (req, file, cb) => {
     const allowedImageTypes = ['image/jpeg', 'image/png', 'image/jpg', 'image/webp'];
     const allowedAudioTypes = ['audio/mpeg', 'audio/wav', 'audio/mp3', 'audio/m4a', 'audio/mp4'];
 
-    if (file.fieldname === 'billImage') {
+    if (file.fieldname === 'billImage' || file.fieldname === 'categoryImage') {
         if (allowedImageTypes.includes(file.mimetype)) {
             cb(null, true);
         } else {
@@ -186,6 +186,39 @@ export const billUploadMiddleware = (req, res, next) => {
                 message: 'Lỗi khi upload file lên Cloudinary',
                 error: error.message
             });
+        }
+    });
+};
+
+export const categoryImageUploadMiddleware = (req, res, next) => {
+    const singleUpload = multer({
+        storage: multer.memoryStorage(),
+        limits: { fileSize: maxImageSize, files: 1 },
+        fileFilter,
+    }).single('categoryImage');
+
+    singleUpload(req, res, async (err) => {
+        if (err instanceof multer.MulterError) {
+            if (err.code === 'LIMIT_FILE_SIZE') {
+                return res.status(400).json({ success: false, message: 'File quá lớn. Tối đa 10MB' });
+            }
+            return res.status(400).json({ success: false, message: err.message });
+        }
+        if (err) {
+            return res.status(400).json({ success: false, message: err.message });
+        }
+
+        if (!req.file) {
+            return next();
+        }
+
+        try {
+            const imageBuffer = req.file.buffer;
+            const result = await uploadImageToCloudinary(imageBuffer, 'category_images');
+            req.uploadedCategoryImage = result;
+            next();
+        } catch (error) {
+            return res.status(500).json({ success: false, message: 'Lỗi khi upload file lên Cloudinary', error: error.message });
         }
     });
 };

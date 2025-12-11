@@ -13,6 +13,7 @@ const categorySchema = new mongoose.Schema({
         enum: ['system', 'personal', 'family'],
         default: 'personal'
     },
+    image: { type: String, default: "" },
 
     // Chủ sở hữu
     userId: {

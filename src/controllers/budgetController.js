@@ -203,6 +203,7 @@ export const createBudget = async (req, res) => {
         }
 
         const {
+            name,
             type,
             amount,
             categoryId,
@@ -380,6 +381,7 @@ export const createBudget = async (req, res) => {
 
         // Tạo budget mới
         const budget = new Budget({
+            name,
             userId: req.userId,
             type,
             amount,
@@ -528,7 +530,7 @@ export const updateBudget = async (req, res) => {
             });
         }
 
-        const { amount, categoryId, isActive, isShared, familyId: bodyFamilyId } = value;
+        const { name, amount, categoryId, isActive, isShared, familyId: bodyFamilyId } = value;
 
         const budget = await Budget.findOne({ _id: id, userId: req.userId });
         if (!budget) {
