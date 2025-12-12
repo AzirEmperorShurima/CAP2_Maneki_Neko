@@ -13,12 +13,22 @@ import { chat_joke } from '../utils/joke.js';
 
 dayjs.locale('vi');
 
+const pendingMediaByUser = new Map();
+const IRRELEVANT_CONFIDENCE = 0.4;
+const REQUIRED_CONFIDENCE = 0.6;
+
+function isIrrelevant(analysis) {
+  const noAmount = !analysis?.amount || analysis.amount <= 0;
+  const noMerchant = !analysis?.merchant;
+  const noItems = !Array.isArray(analysis?.items) || analysis.items.length === 0;
+  return (parseFloat(analysis?.confidence) < IRRELEVANT_CONFIDENCE) && noAmount && noMerchant && noItems;
+}
+
 /**
  * Cập nhật tiến độ của các goal liên kết với wallet khi có giao dịch mới
  */
 const updateGoalProgressFromTransaction = async (transaction, userId) => {
   try {
-    // Chỉ xử lý nếu transaction có walletId và là thu nhập (income)
     if (!transaction.walletId || transaction.type !== 'income') return;
 
     const activeGoals = await Goal.find({
@@ -88,7 +98,7 @@ const findParentBudget = async (userId, childPeriod, periodStart, periodEnd) => 
 export const geminiChatController = async (req, res) => {
   try {
     const message = (req.body && typeof req.body.message === 'string') ? req.body.message : '';
-    const uploadedFiles = req.uploadedFiles; // Từ billUploadMiddleware
+    const uploadedFiles = req.uploadedFiles;
 
     // ===== MODE 1: UPLOAD BILL WITH IMAGE =====
     if (uploadedFiles && (uploadedFiles.billImage || uploadedFiles.voice)) {
@@ -116,61 +126,175 @@ async function handleBillUpload(req, res, uploadedFiles, userMessage) {
     const manualAmount = req.body && req.body.manualAmount ? Number(req.body.manualAmount) : undefined;
     const manualCategory = req.body && typeof req.body.manualCategory === 'string' ? req.body.manualCategory : undefined;
 
-    console.log('📸 Đang phân tích bill...');
-
-    // Lấy categories
-    const categories = await Category.find({ userId: req.userId });
+    const categories = await Category.find({
+      $or: [
+        { scope: 'system', isDefault: true },
+        { scope: 'personal', userId: req.userId }
+      ]
+    });
     const categoriesPayload = categories.map(c => ({
       id: c._id,
       name: c.name,
       type: c.type,
     }));
+    console.log('📝 Categories payload:', categoriesPayload);
+
+    const pending = pendingMediaByUser.get(req.userId) || {};
+    const currentImage = billImage || pending.billImage || null;
+    const currentVoice = voice || pending.voice || null;
+    const hasBoth = !!currentImage && !!currentVoice;
+    const onlyImage = !!currentImage && !currentVoice;
+    const onlyVoice = !!currentVoice && !currentImage;
 
     let billAnalysis;
     try {
-      const imageUrl = billImage?.url || null;
+      const imageUrl = currentImage?.url || null;
       billAnalysis = await analyzeBillComplete(
         imageUrl,
-        voice?.url || null,
+        currentVoice?.url || null,
         categoriesPayload
       );
     } catch (error) {
+      if (onlyImage) {
+        return res.json({
+          message: 'Ảnh này có vẻ không liên quan đến giao dịch/bill. Mình sẽ không ghi giao dịch.',
+          data: {
+            isIrrelevant: true,
+            billImage: currentImage ? {
+              url: currentImage.url,
+              thumbnail: currentImage.thumbnail,
+              publicId: currentImage.publicId
+            } : null
+          }
+        });
+      }
+      if (onlyVoice) {
+        return res.json({
+          message: 'Voice này có vẻ không liên quan đến giao dịch/bill. Mình sẽ không ghi giao dịch.',
+          data: {
+            isIrrelevant: true,
+            voice: currentVoice ? {
+              url: currentVoice.url,
+              publicId: currentVoice.publicId
+            } : null
+          }
+        });
+      }
       return res.json({
         message: 'Hmm, mình không đọc được bill này rõ lắm. Bạn có thể nhập thủ công không?',
         data: {
           requireManualInput: true,
-          billImage: billImage ? {
-            url: billImage.url,
-            thumbnail: billImage.thumbnail,
-            publicId: billImage.publicId
+          billImage: currentImage ? {
+            url: currentImage.url,
+            thumbnail: currentImage.thumbnail,
+            publicId: currentImage.publicId
           } : null,
-          voice: voice ? {
-            url: voice.url,
-            publicId: voice.publicId
+          voice: currentVoice ? {
+            url: currentVoice.url,
+            publicId: currentVoice.publicId
           } : null
         }
       });
     }
 
-    // Kiểm tra confidence
-    if (billAnalysis.confidence < 0.6) {
+    if (isIrrelevant(billAnalysis)) {
+      if (onlyImage) {
+        return res.json({
+          message: 'Ảnh này không liên quan đến giao dịch/bill. Mình sẽ không ghi giao dịch.',
+          data: {
+            isIrrelevant: true,
+            billImage: currentImage ? {
+              url: currentImage.url,
+              thumbnail: currentImage.thumbnail,
+              publicId: currentImage.publicId
+            } : null
+          }
+        });
+      }
+      if (onlyVoice) {
+        return res.json({
+          message: 'Voice này không liên quan đến giao dịch/bill. Mình sẽ không ghi giao dịch.',
+          data: {
+            isIrrelevant: true,
+            voice: currentVoice ? {
+              url: currentVoice.url,
+              publicId: currentVoice.publicId,
+              transcript: billAnalysis.voiceTranscript || null
+            } : null
+          }
+        });
+      }
       return res.json({
-        message: `Mình chỉ đọc được khoảng ${(billAnalysis.confidence * 100).toFixed(0)}% thôi. Bạn kiểm tra lại giúp mình nhé!`,
+        message: 'Các nội dung gửi lên không liên quan đến bill/giao dịch. Mình sẽ không ghi giao dịch.',
+        data: {
+          isIrrelevant: true,
+          billImage: currentImage ? {
+            url: currentImage.url,
+            thumbnail: currentImage.thumbnail,
+            publicId: currentImage.publicId
+          } : null,
+          voice: currentVoice ? {
+            url: currentVoice.url,
+            publicId: currentVoice.publicId,
+            transcript: billAnalysis.voiceTranscript || null
+          } : null
+        }
+      });
+    }
+
+    if (hasBoth && parseFloat(billAnalysis.confidence) < REQUIRED_CONFIDENCE) {
+      return res.json({
+        message: `Mình chỉ đọc được khoảng ${(parseFloat(billAnalysis.confidence) * 100).toFixed(0)}% thôi. Bạn kiểm tra lại giúp mình nhé!`,
         data: {
           requireManualInput: true,
           suggestion: billAnalysis,
-          billImage: {
-            url: billImage.url,
-            thumbnail: billImage.thumbnail,
-            publicId: billImage.publicId
-          },
-          voice: voice ? {
-            url: voice.url,
-            publicId: voice.publicId,
+          billImage: currentImage ? {
+            url: currentImage.url,
+            thumbnail: currentImage.thumbnail,
+            publicId: currentImage.publicId
+          } : null,
+          voice: currentVoice ? {
+            url: currentVoice.url,
+            publicId: currentVoice.publicId,
             transcript: billAnalysis.voiceTranscript
           } : null
         }
       });
+    }
+
+    if (!hasBoth) {
+      pendingMediaByUser.set(req.userId, {
+        billImage: currentImage || null,
+        voice: currentVoice || null
+      });
+      if (onlyVoice) {
+        return res.json({
+          message: 'Đã nhận voice. Bạn gửi thêm ảnh hóa đơn để mình ghi giao dịch nhé!',
+          data: {
+            pending: true,
+            need: 'billImage',
+            voice: currentVoice ? {
+              url: currentVoice.url,
+              publicId: currentVoice.publicId,
+              transcript: billAnalysis.voiceTranscript || null
+            } : null
+          }
+        });
+      }
+      if (onlyImage) {
+        return res.json({
+          message: 'Đã nhận ảnh hóa đơn. Bạn có thể gửi thêm voice mô tả để mình xác nhận và ghi giao dịch.',
+          data: {
+            pending: true,
+            need: 'voice',
+            billImage: currentImage ? {
+              url: currentImage.url,
+              thumbnail: currentImage.thumbnail,
+              publicId: currentImage.publicId
+            } : null
+          }
+        });
+      }
     }
 
     const finalAmount = manualAmount || billAnalysis.amount;
@@ -180,7 +304,10 @@ async function handleBillUpload(req, res, uploadedFiles, userMessage) {
     let category = await Category.findOne({
       name: { $regex: new RegExp(`^${escapeRegExp(finalCategoryName)}$`, 'i') },
       type: finalType,
-      userId: req.userId
+      $or: [
+        { scope: 'system', isDefault: true },
+        { scope: 'personal', userId: req.userId }
+      ]
     });
 
     if (!category) {
@@ -246,7 +373,7 @@ async function handleBillUpload(req, res, uploadedFiles, userMessage) {
     const jokePool = finalType === 'income' ? chat_joke.income : chat_joke.bigSpending;
     const jokeMessage = jokePool?.[Math.floor(Math.random() * jokePool.length)] || null;
 
-    return res.json({
+    const response = {
       message: reply,
       data: {
         transaction: {
@@ -260,20 +387,23 @@ async function handleBillUpload(req, res, uploadedFiles, userMessage) {
           merchant: billAnalysis.merchant,
           confidence: billAnalysis.confidence
         },
-        billImage: billImage ? {
-          url: billImage.url,
-          thumbnail: billImage.thumbnail,
-          publicId: billImage.publicId
+        billImage: currentImage ? {
+          url: currentImage.url,
+          thumbnail: currentImage.thumbnail,
+          publicId: currentImage.publicId
         } : null,
-        voice: voice ? {
-          url: voice.url,
-          publicId: voice.publicId,
+        voice: currentVoice ? {
+          url: currentVoice.url,
+          publicId: currentVoice.publicId,
           transcript: billAnalysis.voiceTranscript
         } : null,
         items: billAnalysis.items,
         jokeMessage
       }
-    });
+    };
+
+    pendingMediaByUser.delete(req.userId);
+    return res.json(response);
 
   } catch (error) {
     console.error('Lỗi handleBillUpload:', error);
@@ -290,7 +420,12 @@ async function handleTextChat(req, res, message) {
       return res.status(400).json({ error: 'Tin nhắn không được để trống' });
     }
 
-    const categories = await Category.find({ userId: req.userId });
+    const categories = await Category.find({
+      $or: [
+        { scope: 'system', isDefault: true },
+        { scope: 'personal', userId: req.userId }
+      ]
+    });
     const categoriesPayload = categories.map(category => ({
       id: category._id,
       name: category.name,
@@ -336,10 +471,28 @@ async function handleTextChat(req, res, message) {
     // 1. Tạo giao dịch
     // ==================================================================
     if (data.action === 'create_transaction') {
-      let category = await Category.findOne({
-        name: { $regex: new RegExp(`^${escapeRegExp(data.category_name)}$`, 'i') },
-        type: data.type,
-      });
+      let category = null;
+
+      if (data.category_id) {
+        category = await Category.findOne({
+          _id: data.category_id,
+          $or: [
+            { scope: 'system', isDefault: true },
+            { scope: 'personal', userId: req.userId }
+          ]
+        });
+      }
+
+      if (!category) {
+        category = await Category.findOne({
+          name: { $regex: new RegExp(`^${escapeRegExp(data.category_name)}$`, 'i') },
+          type: data.type,
+          $or: [
+            { scope: 'system', isDefault: true },
+            { scope: 'personal', userId: req.userId }
+          ]
+        });
+      }
 
       if (!category) {
         category = await Category.create({
@@ -589,7 +742,8 @@ async function handleTextChat(req, res, message) {
       message: reply.trim(),
       data: {
         transaction: transaction || null,
-        jokeMessage
+        jokeMessage,
+        message: reply.trim(),
       }
     });
 

@@ -1,4 +1,4 @@
-import { geminiAnalyzeMultimodal_new } from './geminiAPI.js';
+import { geminiAnalyzeMultimodal, geminiAnalyzeMultimodal_new } from './geminiAPI.js';
 import { buildBillAnalysisPrompt } from './geminiPromptBuild.js';
 import dayjs from 'dayjs';
 
@@ -20,12 +20,7 @@ export async function analyzeBillComplete(imageUrl, voiceUrl = null, categories 
         }
 
         const rawText = result.response.text().trim();
-        console.log('📝 Gemini raw response:', rawText);
-
-        // Parse JSON response
         const billData = parseGeminiResponse(rawText);
-
-        // Validate và normalize
         const normalizedData = normalizeBillData(billData);
 
         console.log('✅ Phân tích thành công:', {

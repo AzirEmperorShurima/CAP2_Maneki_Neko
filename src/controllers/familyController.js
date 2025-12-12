@@ -135,26 +135,21 @@ export const sendInviteEmail = async (req, res) => {
         if (!family) return res.status(404).json({ error: 'Không tìm thấy gia đình' });
         if (!family.isActive) return res.status(400).json({ error: 'Gia đình đã bị vô hiệu hóa' });
 
-        // Kiểm tra đã là thành viên chưa - SỬA: dùng method isMember
         const existingMember = await User.findOne({ email, familyId: family._id });
         if (existingMember) return res.status(400).json({ error: 'Đã là thành viên' });
 
-        // Tạo/cập nhật pending invite - SỬA: dùng method upsertPendingInvite
         const expiresAt = dayjs().add(7, 'day').toDate();
         family.upsertPendingInvite(email, req.userId, expiresAt);
         await family.save();
 
-        // Đảm bảo có invite code
         if (!family.inviteCode) {
             family.inviteCode = await generateInviteCode();
             await family.save();
         }
 
-        // Tạo 2 link
         const deepLink = `myapp://join-invite?familyCode=${family.inviteCode}&email=${encodeURIComponent(email)}`;
         const webJoinLink = `${process.env.APP_URL}/api/family/join-web?familyCode=${family.inviteCode}&email=${encodeURIComponent(email)}`;
 
-        // Kiểm tra user đã tồn tại chưa
         const userExists = await User.findOne({ email });
         const userExistsBool = !!userExists;
 
@@ -176,7 +171,7 @@ export const sendInviteEmail = async (req, res) => {
                 webJoinLink,
                 deepLink,
                 userExists: userExistsBool,
-            }).catch(() => {
+            }).catch((error) => {
                 console.log('Error sending email:', error);
             });
         });

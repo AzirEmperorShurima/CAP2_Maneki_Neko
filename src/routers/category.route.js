@@ -1,11 +1,11 @@
 import { Router } from 'express';
-import { createCategory, updateCategory, getCategories } from '../controllers/categoryController.js';
-import { categoryImageUploadMiddleware } from '../middlewares/cloudinary.js';
+import { createCategory, updateCategory, getCategories, getCategoryImages } from '../controllers/categoryController.js';
 
 const categoryRouter = Router();
 
-categoryRouter.post('/', categoryImageUploadMiddleware, createCategory);
+categoryRouter.post('/', createCategory);
 categoryRouter.get('/', getCategories);
-categoryRouter.put('/:id', categoryImageUploadMiddleware, updateCategory);
+categoryRouter.put('/:id', updateCategory);
+categoryRouter.get('/images', getCategoryImages);
 
 export default categoryRouter;
