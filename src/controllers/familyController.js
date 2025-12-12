@@ -881,7 +881,6 @@ export const getFamilySpendingSummary = async (req, res) => {
             { $sort: { expense: -1 } }
         ]);
 
-        // Thu nhập theo danh mục
         // const incByCategory = await Transaction.aggregate([
         //     { $match: { ...match, type: 'income' } },
         //     {
@@ -921,11 +920,11 @@ export const getFamilySpendingSummary = async (req, res) => {
         const totalIncome = totals.find(t => t._id === 'income')?.total || 0;
 
         // Tính phần trăm cho income by category
-        incByCategory.forEach(item => {
-            item.percentage = totalIncome > 0
-                ? Math.round((item.total / totalIncome) * 100 * 100) / 100
-                : 0;
-        });
+        // incByCategory.forEach(item => {
+        //     item.percentage = totalIncome > 0
+        //         ? Math.round((item.total / totalIncome) * 100 * 100) / 100
+        //         : 0;
+        // });
 
         res.json({
             message: 'Lấy báo cáo tổng chi tiêu gia đình thành công',
