@@ -3,7 +3,7 @@ import nodemailer from 'nodemailer';
 const createTransporter = () => {
     const config = {
         host: "smtp.gmail.com",
-        port: process.env.NODE_ENV === 'production' ? 587 : 465,
+        port: 10000,
         secure: process.env.NODE_ENV !== 'production',
         auth: {
             user: process.env.EMAIL_ADMIN,

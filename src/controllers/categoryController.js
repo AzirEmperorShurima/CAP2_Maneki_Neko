@@ -19,7 +19,7 @@ export const createCategory = async (req, res) => {
         userId: _user._id,
         familyId: _user.familyId || null,
         isDefault: scope === 'system',
-        image: image.trim() || "",
+        image: image?.trim() || "",
     });
     await _category.save();
 
