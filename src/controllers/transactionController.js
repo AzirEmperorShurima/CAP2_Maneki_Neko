@@ -2,6 +2,7 @@ import Wallet from "../models/wallet.js";
 import Transaction from "../models/transaction.js";
 import user from "../models/user.js";
 import { validateCreateTransaction, validateUpdateTransaction, validateTransactionIdParam } from "../validations/transaction.js";
+import Category from "../models/category.js";
 
 import * as transactionService from '../services/transactions/analytics/transactionAlalytics.js';
 import { checkBudgetWarning, updateBudgetSpentAmounts } from "../utils/budget.js";
@@ -384,20 +385,19 @@ export const deleteTransaction = async (req, res) => {
             return res.status(404).json({ error: 'Không tìm thấy giao dịch' });
         }
 
-        // Hoàn nguyên wallet
+        let wallet = null;
         if (transaction.walletId) {
-            const wallet = await Wallet.findById(transaction.walletId);
+            wallet = await Wallet.findById(transaction.walletId);
             if (wallet) {
                 if (transaction.type === 'expense') {
-                    wallet.balance += transaction.amount; // Hoàn tiền
+                    wallet.balance += transaction.amount;
                 } else if (transaction.type === 'income') {
-                    wallet.balance -= transaction.amount; // Trừ tiền
+                    wallet.balance -= transaction.amount;
                 }
                 await wallet.save();
             }
         }
 
-        // Hoàn nguyên budget (nếu là expense)
         if (transaction.type === 'expense') {
             const restoreTransaction = {
                 ...transaction.toObject(),
@@ -406,13 +406,39 @@ export const deleteTransaction = async (req, res) => {
             await updateBudgetSpentAmounts(req.userId, restoreTransaction);
         }
 
-        // Xóa transaction
         await Transaction.deleteOne({ _id: transactionId });
+
+        const category = transaction.categoryId
+            ? await Category.findById(transaction.categoryId).select('name type scope')
+            : null;
+
+        const normalizedTransaction = {
+            id: transaction._id.toString(),
+            amount: transaction.amount,
+            type: transaction.type,
+            date: transaction.date,
+            description: transaction.description || '',
+            category: category ? {
+                id: category._id.toString(),
+                name: category.name,
+                type: category.type,
+                scope: category.scope
+            } : null,
+            walletId: transaction.walletId ? transaction.walletId.toString() : null
+        };
+
+        const normalizedWallet = wallet ? {
+            id: wallet._id.toString(),
+            name: wallet.name,
+            balance: wallet.balance
+        } : null;
 
         res.json({
             message: 'Đã xóa giao dịch thành công',
             data: {
-                restoredBalance: transaction.amount
+                transaction: normalizedTransaction,
+                wallet: normalizedWallet,
+                restoredAmount: transaction.amount
             }
         });
 
