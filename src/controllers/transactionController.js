@@ -37,6 +37,42 @@ import { checkWalletBalance, getOrCreateDefaultWallet, getUserDefaultWallet, get
 // };
 
 // create new a transaction in basic type
+// Thêm helper function parse date
+// Helper function parse date - LUÔN parse từ raw input trước khi validation
+const parseDate = (dateInput) => {
+    if (!dateInput) return new Date();
+    
+    // Nếu đã là Date object, kiểm tra xem có phải do Joi parse sai không
+    if (dateInput instanceof Date) {
+        // Nếu date hợp lệ, return luôn
+        if (!isNaN(dateInput.getTime())) return dateInput;
+        return new Date();
+    }
+    
+    const dateStr = String(dateInput).trim();
+    
+    // Format: DD-MM-YYYY hoặc D-M-YYYY (priority cao nhất)
+    if (/^\d{1,2}-\d{1,2}-\d{4}$/.test(dateStr)) {
+        const [day, month, year] = dateStr.split('-').map(Number);
+        const parsed = new Date(year, month - 1, day);
+        // Set giờ về 00:00:00 local time
+        parsed.setHours(0, 0, 0, 0);
+        return parsed;
+    }
+    
+    // Format: YYYY-MM-DD (ISO)
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+        const [year, month, day] = dateStr.split('-').map(Number);
+        const parsed = new Date(year, month - 1, day);
+        parsed.setHours(0, 0, 0, 0);
+        return parsed;
+    }
+    
+    // Fallback: dùng Date constructor mặc định
+    const parsed = new Date(dateStr);
+    return isNaN(parsed.getTime()) ? new Date() : parsed;
+};
+
 export const createTransaction = async (req, res) => {
     try {
         const { error, value } = validateCreateTransaction(req.body);
@@ -50,7 +86,9 @@ export const createTransaction = async (req, res) => {
             });
         }
 
-        const { amount, type, expense_for, date, description, isShared, categoryId, walletId } = value;
+        // FIX: Parse date từ req.body gốc thay vì dùng value đã được Joi validate
+        const { amount, type, expense_for, description, isShared, categoryId, walletId } = value;
+        const originalDate = req.body.date; // Lấy raw date trước khi Joi parse
 
         let wallet = null;
         let walletCreated = false;
@@ -102,19 +140,25 @@ export const createTransaction = async (req, res) => {
                 };
             }
         }
-        let expense_for_type = ""
+        
+        let expense_for_type = "";
         if (type === 'expense') {
             expense_for_type = expense_for || 'Tôi';
         } else if (type === 'income') {
             expense_for_type = "";
         }
+
+        // FIX: Parse date đúng format DD-MM-YYYY từ raw input
+        const parsedDate = parseDate(originalDate);
+        console.log('📅 Original date:', originalDate, '→ Parsed:', parsedDate.toISOString(), '(Local:', parsedDate.toLocaleString('vi-VN'), ')');
+
         const transaction = new Transaction({
             userId: req.userId,
             walletId: wallet._id,
             amount,
             type,
             expense_for: expense_for_type,
-            date: date || new Date(),
+            date: parsedDate,
             description: description || '',
             isShared: isShared || false,
             categoryId: categoryId || null,
@@ -129,9 +173,11 @@ export const createTransaction = async (req, res) => {
             const budgetUpdateCount = await updateBudgetSpentAmounts(req.userId, transaction);
             console.log(`✅ Updated ${budgetUpdateCount} budgets`);
             const budgetWarnings = await checkBudgetWarning(req.userId, transaction);
+            
             const populatedTransaction = await Transaction.findById(transaction._id)
                 .populate('categoryId', 'name')
                 .populate('walletId', 'name balance scope type icon');
+                
             const normalizedTransaction = (() => {
                 const src = typeof populatedTransaction.toObject === 'function' ? populatedTransaction.toObject() : populatedTransaction;
                 const { _id, walletId, categoryId, __v, ...rest } = src;
@@ -142,6 +188,7 @@ export const createTransaction = async (req, res) => {
                     categoryId: categoryId && categoryId._id ? { ...categoryId, id: categoryId._id.toString(), _id: undefined } : categoryId
                 };
             })();
+            
             return res.status(201).json({
                 message: 'Tạo giao dịch thành công',
                 data: {
@@ -167,6 +214,7 @@ export const createTransaction = async (req, res) => {
             const populatedTransaction = await Transaction.findById(transaction._id)
                 .populate('categoryId', 'name')
                 .populate('walletId', 'name balance scope type icon');
+                
             const normalizedTransaction = (() => {
                 const src = typeof populatedTransaction.toObject === 'function' ? populatedTransaction.toObject() : populatedTransaction;
                 const { _id, walletId, categoryId, __v, ...rest } = src;
@@ -177,6 +225,7 @@ export const createTransaction = async (req, res) => {
                     categoryId: categoryId && categoryId._id ? { ...categoryId, id: categoryId._id.toString(), _id: undefined } : categoryId
                 };
             })();
+            
             return res.status(201).json({
                 message: 'Tạo giao dịch thành công',
                 data: {
@@ -234,6 +283,69 @@ export const updateTransaction = async (req, res) => {
             'isAutoCategorized', 'receiptImage', 'currency'
         ];
 
+        // Parse date nếu có (giống createTransaction)
+        if (value.date !== undefined) {
+            const parseDate = (dateInput) => {
+                if (!dateInput) return undefined;
+                if (dateInput instanceof Date) return dateInput;
+                
+                const dateStr = String(dateInput).trim();
+                
+                if (/^\d{1,2}-\d{1,2}-\d{4}$/.test(dateStr)) {
+                    const [day, month, year] = dateStr.split('-').map(Number);
+                    const parsed = new Date(year, month - 1, day);
+                    parsed.setHours(0, 0, 0, 0);
+                    return parsed;
+                }
+                
+                if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+                    const [year, month, day] = dateStr.split('-').map(Number);
+                    const parsed = new Date(year, month - 1, day);
+                    parsed.setHours(0, 0, 0, 0);
+                    return parsed;
+                }
+                
+                const parsed = new Date(dateStr);
+                return isNaN(parsed.getTime()) ? undefined : parsed;
+            };
+            
+            const originalDate = req.body.date;
+            const parsedDate = parseDate(originalDate);
+            if (parsedDate) {
+                value.date = parsedDate;
+            }
+        }
+
+        // FIX: Kiểm tra xem có thay đổi gì không
+        const hasAnyChanges = [...criticalFields, ...secondaryFields].some(field => {
+            if (value[field] === undefined) return false;
+            
+            // Special handling cho date - so sánh timestamp
+            if (field === 'date' && value[field] instanceof Date && transaction[field] instanceof Date) {
+                return value[field].getTime() !== transaction[field].getTime();
+            }
+            
+            // Special handling cho ObjectId
+            if (field === 'walletId' || field === 'categoryId') {
+                const newValue = value[field] ? value[field].toString() : null;
+                const oldValue = transaction[field] ? transaction[field].toString() : null;
+                return newValue !== oldValue;
+            }
+            
+            return value[field] !== transaction[field];
+        });
+
+        if (!hasAnyChanges) {
+            const populatedTransaction = await Transaction.findById(transaction._id)
+                .populate('categoryId', 'name')
+                .populate('walletId', 'name balance scope type icon');
+
+            return res.json({
+                message: 'Không có thay đổi nào được thực hiện',
+                data: populatedTransaction
+            });
+        }
+
         const hasCriticalChanges = criticalFields.some(field =>
             value[field] !== undefined && value[field] !== transaction[field]
         );
@@ -260,7 +372,18 @@ export const updateTransaction = async (req, res) => {
 
         const oldAmount = transaction.amount;
         const oldType = transaction.type;
-        const oldWalletId = transaction.walletId;
+        const oldWalletId = transaction.walletId.toString();
+        const newWalletId = walletId ? walletId.toString() : oldWalletId;
+
+        // FIX: Kiểm tra xem có thực sự đổi ví không
+        const isWalletChanged = newWalletId !== oldWalletId;
+
+        console.log('🔄 Update info:', {
+            oldAmount, newAmount: amount,
+            oldType, newType: type,
+            oldWalletId, newWalletId,
+            isWalletChanged
+        });
 
         // BƯỚC 1: Hoàn nguyên ví cũ
         if (oldWalletId) {
@@ -272,6 +395,7 @@ export const updateTransaction = async (req, res) => {
                     oldWallet.balance -= oldAmount; // Trừ tiền
                 }
                 await oldWallet.save();
+                console.log(`✅ Restored old wallet: ${oldWallet.name}, balance: ${oldWallet.balance}`);
             }
         }
 
@@ -285,12 +409,10 @@ export const updateTransaction = async (req, res) => {
         }
 
         // BƯỚC 3: Cập nhật TẤT CẢ các thông tin transaction
-        // Update critical fields
         if (amount !== undefined) transaction.amount = amount;
         if (type !== undefined) transaction.type = type;
         if (walletId !== undefined) transaction.walletId = walletId;
 
-        // Update secondary fields
         secondaryFields.forEach(field => {
             if (value[field] !== undefined) {
                 transaction[field] = value[field];
@@ -317,11 +439,13 @@ export const updateTransaction = async (req, res) => {
             }
 
             if (newWallet) {
-                // Kiểm tra số dư cho expense
-                if (transaction.type === 'expense') {
+                // FIX: CHỈ kiểm tra số dư khi đổi ví khác
+                if (isWalletChanged && transaction.type === 'expense') {
                     if (newWallet.balance < transaction.amount) {
-                        // Rollback
+                        // Rollback transaction
                         await transaction.deleteOne();
+                        
+                        // Rollback wallet
                         if (oldWalletId) {
                             const rollbackWallet = await Wallet.findById(oldWalletId);
                             if (rollbackWallet) {
@@ -340,13 +464,17 @@ export const updateTransaction = async (req, res) => {
                             required: transaction.amount
                         });
                     }
+                }
 
+                // Apply changes to wallet
+                if (transaction.type === 'expense') {
                     newWallet.balance -= transaction.amount;
                 } else if (transaction.type === 'income') {
                     newWallet.balance += transaction.amount;
                 }
 
                 await newWallet.save();
+                console.log(`✅ Updated wallet: ${newWallet.name}, balance: ${newWallet.balance}`);
             }
         }
 
@@ -512,62 +640,79 @@ export const getTransactions = async (req, res) => {
 
         const { type, search, startDate, endDate, month } = req.query;
 
-        let match = {
-            $or: [
-                { userId: _user._id },
-                { familyId: _user.familyId, isShared: true }
-            ]
-        };
+        // Khởi tạo match với điều kiện userId/familyId
+        let match = {};
+        
+        // Filter theo user hoặc family shared
+        const userFilter = [{ userId: _user._id }];
+        if (_user.familyId) {
+            userFilter.push({ familyId: _user.familyId, isShared: true });
+        }
+        match.$or = userFilter;
 
+        // Thêm filter theo type
         if (type && ['income', 'expense'].includes(type)) {
             match.type = type;
         }
 
+        // Xử lý filter theo tháng (FIX TIMEZONE)
         const monthStr = typeof month === 'string' ? month.trim() : '';
         if (monthStr) {
             const parts = monthStr.split('-');
             const y = parseInt(parts[0], 10);
             const m = parseInt(parts[1], 10) - 1;
             if (!Number.isNaN(y) && !Number.isNaN(m) && m >= 0 && m < 12) {
-                const start = new Date(y, m, 1, 0, 0, 0, 0);
-                const end = new Date(y, m + 1, 0, 23, 59, 59, 999);
+                // Tạo date theo local timezone (GMT+7)
+                const start = new Date(y, m, 1);
+                start.setHours(0, 0, 0, 0);
+                
+                const end = new Date(y, m + 1, 0);
+                end.setHours(23, 59, 59, 999);
+                
                 match.date = { $gte: start, $lte: end };
             }
         }
 
+        // Xử lý filter theo startDate/endDate (nếu không có month)
         if (!match.date && (startDate || endDate)) {
             match.date = {};
             if (startDate) {
-                match.date.$gte = new Date(startDate);
+                const start = new Date(startDate);
+                start.setHours(0, 0, 0, 0);
+                match.date.$gte = start;
             }
             if (endDate) {
-                match.date.$lte = new Date(endDate);
+                const end = new Date(endDate);
+                end.setHours(23, 59, 59, 999);
+                match.date.$lte = end;
             }
         }
 
+        // Xử lý search
         if (search && search.trim()) {
             const regex = { $regex: search.trim(), $options: 'i' };
-            const searchCondition = {
-                $or: [
-                    { description: regex },
-                    { voiceText: regex },
-                    { ocrText: regex }
+            const searchConditions = [
+                { description: regex },
+                { voiceText: regex },
+                { ocrText: regex }
+            ];
+            
+            // Kết hợp search với các điều kiện khác bằng $and
+            const existingConditions = { ...match };
+            match = {
+                $and: [
+                    existingConditions,
+                    { $or: searchConditions }
                 ]
             };
-            if (Object.keys(match).length > 1) {
-                match.$and = [
-                    match,
-                    searchCondition
-                ];
-            } else {
-                match = searchCondition;
-            }
         }
+
+        console.log('Final match:', JSON.stringify(match, null, 2));
 
         const [transactions, total] = await Promise.all([
             Transaction.find(match)
                 .populate('categoryId', 'name image')
-                .populate('userId', 'username')
+                .populate('userId', 'username avatar')
                 .populate('walletId', 'name balance scope type icon')
                 .sort({ date: -1 })
                 .skip(skip)
@@ -575,6 +720,8 @@ export const getTransactions = async (req, res) => {
 
             Transaction.countDocuments(match)
         ]);
+
+        console.log(`Found ${transactions.length} transactions`);
 
         const result = transactions.map(t => {
             const plain = t.toObject();
