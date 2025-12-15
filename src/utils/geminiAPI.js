@@ -37,9 +37,7 @@ async function downloadFileToTemp(url, filename) {
     const response = await axios.get(url, { responseType: 'arraybuffer' });
     const tempDir = os.tmpdir();
     const tempPath = path.join(tempDir, filename);
-
     await fs.promises.writeFile(tempPath, response.data);
-
     return tempPath;
   } catch (error) {
     console.error('Error downloading file:', error);
@@ -83,8 +81,104 @@ function getMimeType(url, headerContentType) {
 }
 
 /**
- * Phân tích multimodal (ảnh + audio) với Gemini
- * Sử dụng File API để upload file lên Google trước
+ * Phân tích multimodal với inlineData (FASTER VERSION)
+ * Hỗ trợ: chỉ ảnh, chỉ voice, hoặc cả hai
+ * 
+ * @param {string|null} imageUrl - URL ảnh từ Cloudinary (optional)
+ * @param {string|null} voiceUrl - URL audio từ Cloudinary (optional)
+ * @param {string} prompt - Text prompt
+ * @returns {Object} Response từ Gemini
+ */
+export async function geminiAnalyzeMultimodal_new(imageUrl = null, voiceUrl = null, prompt) {
+  try {
+    if (!prompt || prompt.trim().length === 0) {
+      throw new Error('prompt is required');
+    }
+
+    const contents = [];
+
+    // Thêm ảnh nếu có
+    if (imageUrl) {
+      console.log('📷 Processing image:', imageUrl);
+      const imageData = await downloadFileAsBase64(imageUrl);
+      const imageMimeType = getMimeType(imageUrl, imageData.contentType);
+      contents.push({
+        inlineData: {
+          mimeType: imageMimeType,
+          data: imageData.base64,
+        }
+      });
+    }
+
+    // Thêm voice nếu có
+    if (voiceUrl) {
+      console.log('🎤 Processing voice:', voiceUrl);
+      const audioData = await downloadFileAsBase64(voiceUrl);
+      const audioMimeType = getMimeType(voiceUrl, audioData.contentType);
+      contents.push({
+        inlineData: {
+          mimeType: audioMimeType,
+          data: audioData.base64,
+        }
+      });
+    }
+
+    // Phải có ít nhất 1 media
+    if (contents.length === 0) {
+      throw new Error('Phải có ít nhất ảnh hoặc voice');
+    }
+
+    // Thêm text prompt
+    contents.push({ text: prompt });
+
+    // Gọi Gemini API
+    async function callModel(model) {
+      return await ai.models.generateContent({
+        model,
+        contents: contents,
+      });
+    }
+
+    let result = "";
+    try {
+      result = await callModel('gemini-2.5-flash');
+      console.log('✅ Response from gemini-2.5-flash');
+    } catch (e1) {
+      console.log('⚠️ Error calling gemini-2.5-flash:', e1.message);
+      console.log('🔄 Trying gemini-2.0-flash...');
+      try {
+        result = await callModel('gemini-2.0-flash');
+        console.log('✅ Response from gemini-2.0-flash');
+      } catch (e2) {
+        console.log('❌ Error calling gemini-2.0-flash:', e2.message);
+        throw new Error('Không thể kết nối với Gemini API');
+      }
+    }
+
+    const text = typeof result?.response?.text === 'function'
+      ? (result.response.text() || '').trim()
+      : (typeof result?.text === 'string' ? result.text.trim() : '');
+
+    if (!text) {
+      throw new Error('Gemini returned empty response');
+    }
+
+    return {
+      response: {
+        text: () => text,
+      },
+      raw: result,
+    };
+
+  } catch (err) {
+    console.error('❌ Gemini multimodal error:', err);
+    throw err;
+  }
+}
+
+/**
+ * Phân tích multimodal (File API version - LEGACY)
+ * Giữ lại để tương thích, nhưng nên dùng geminiAnalyzeMultimodal_new
  */
 export async function geminiAnalyzeMultimodal(imageUrl, voiceUrl = null, prompt) {
   try {
@@ -105,8 +199,6 @@ export async function geminiAnalyzeMultimodal(imageUrl, voiceUrl = null, prompt)
 
       console.log('✅ Image uploaded:', imageFile.uri);
       uploadedFiles.push({ path: imagePath, file: imageFile });
-
-      // Add to content
       contentParts.push({
         fileData: {
           mimeType: imageFile.mimeType,
@@ -115,7 +207,6 @@ export async function geminiAnalyzeMultimodal(imageUrl, voiceUrl = null, prompt)
       });
     }
 
-    // Upload audio nếu có
     if (voiceUrl) {
       console.log('🎤 Downloading audio from:', voiceUrl);
       const audioPath = await downloadFileToTemp(voiceUrl, `voice_${Date.now()}.mp3`);
@@ -129,8 +220,6 @@ export async function geminiAnalyzeMultimodal(imageUrl, voiceUrl = null, prompt)
 
       console.log('✅ Audio uploaded:', audioFile.uri);
       uploadedFiles.push({ path: audioPath, file: audioFile });
-
-      // Add to content
       contentParts.push({
         fileData: {
           mimeType: audioFile.mimeType,
@@ -139,10 +228,8 @@ export async function geminiAnalyzeMultimodal(imageUrl, voiceUrl = null, prompt)
       });
     }
 
-    // Add text prompt
     contentParts.push({ text: prompt });
 
-    // Generate content với files đã upload
     console.log('🤖 Generating content with Gemini...');
     const result = await ai.models.generateContent({
       model: 'gemini-2.0-flash',
@@ -158,11 +245,12 @@ export async function geminiAnalyzeMultimodal(imageUrl, voiceUrl = null, prompt)
         console.warn('Failed to delete temp file:', filePath);
       }
     }
+
     try {
       console.log('🗑️ Deleting files from Gemini API...');
       for (const { file } of uploadedFiles) {
         await ai.files.delete({ name: file.name });
-        console.log(`❌ Deleted: ${file.uri}`);
+        console.log(`✅ Deleted: ${file.uri}`);
       }
     } catch (err) {
       console.warn('Failed to delete Gemini API file:', err);
@@ -181,83 +269,5 @@ export async function geminiAnalyzeMultimodal(imageUrl, voiceUrl = null, prompt)
   } catch (err) {
     console.error('❌ Gemini multimodal error:', err);
     throw err;
-  }
-}
-/**
- * Phân tích multimodal với inlineData (FASTER VERSION)
- * Sử dụng base64 encoding trực tiếp, không cần upload file lên Google
- * 
- * @param {string} imageUrl - URL ảnh bill từ Cloudinary
- * @param {string|null} voiceUrl - URL audio từ Cloudinary (optional)
- * @param {string} prompt - Text prompt
- * @returns {Object} Response từ Gemini
- */
-export async function geminiAnalyzeMultimodal_new(imageUrl, voiceUrl = null, prompt) {
-  try {
-    if (!prompt || prompt.trim().length === 0) {
-      throw new Error('prompt is required');
-    }
-
-    const contents = [];
-
-    if (imageUrl) {
-      const imageData = await downloadFileAsBase64(imageUrl);
-      const imageMimeType = getMimeType(imageUrl, imageData.contentType);
-      contents.push({
-        inlineData: {
-          mimeType: imageMimeType,
-          data: imageData.base64,
-        }
-      });
-    }
-
-    if (voiceUrl) {
-      const audioData = await downloadFileAsBase64(voiceUrl);
-      const audioMimeType = getMimeType(voiceUrl, audioData.contentType);
-      contents.push({
-        inlineData: {
-          mimeType: audioMimeType,
-          data: audioData.base64,
-        }
-      });
-    }
-
-    if (contents.length === 0) {
-      throw new Error('no media provided');
-    }
-
-    contents.push({ text: prompt });
-
-    async function callModel(model) {
-      return await ai.models.generateContent({
-        model,
-        contents: contents,
-      });
-    }
-
-    let result = ""
-    try {
-      result = await callModel('gemini-2.5-flash');
-      console.log('✅ Response from gemini-2.5-flash:', result.text);
-    } catch (e1) {
-      console.log('❌ Error calling gemini-2.5-flash:', e1);
-    }
-
-    const text = typeof result?.response?.text === 'function'
-      ? (result.response.text() || '').trim()
-      : (typeof result?.text === 'string' ? result.text.trim() : '');
-    if (!text) {
-      throw new Error('Gemini returned empty response');
-    }
-
-    return {
-      response: {
-        text: () => text,
-      },
-      raw: result,
-    };
-
-  } catch (err) {
-    console.log('❌ Gemini multimodal error:', err);
   }
 }

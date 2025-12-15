@@ -4,7 +4,7 @@ import Budget from '../models/budget.js';
 import Wallet from '../models/wallet.js';
 import Goal from '../models/goal.js';
 import { geminiChat } from '../utils/gemini.js';
-import { analyzeBillComplete } from '../utils/geminiVision.js';
+import { analyzeBillComplete, analyzeVoiceTransaction } from '../utils/geminiVision.js';
 import dayjs from 'dayjs';
 import 'dayjs/locale/vi.js';
 import { checkBudgetWarning } from '../utils/budget.js';
@@ -77,10 +77,8 @@ const findParentBudget = async (userId, childPeriod, periodStart, periodEnd) => 
     'daily': 'weekly',
     'weekly': 'monthly'
   };
-
   const possibleParentPeriod = parentPeriodMap[childPeriod];
   if (!possibleParentPeriod) return null;
-
   const parentBudget = await Budget.findOne({
     userId,
     type: possibleParentPeriod,
@@ -88,7 +86,6 @@ const findParentBudget = async (userId, childPeriod, periodStart, periodEnd) => 
     periodStart: { $lte: periodStart },
     periodEnd: { $gte: periodEnd }
   });
-
   return parentBudget;
 };
 
@@ -97,19 +94,21 @@ const findParentBudget = async (userId, childPeriod, periodStart, periodEnd) => 
  */
 export const geminiChatController = async (req, res) => {
   try {
-    const message = (req.body && typeof req.body.message === 'string') ? req.body.message : '';
+    const message = (req.body?.message || '').toString();
     const uploadedFiles = req.uploadedFiles;
 
     // ===== MODE 1: UPLOAD BILL WITH IMAGE =====
-    if (uploadedFiles && (uploadedFiles.billImage || uploadedFiles.voice)) {
+    if (uploadedFiles?.billImage) {
       return await handleBillUpload(req, res, uploadedFiles, message);
     }
-
-    // ===== MODE 2: TEXT CHAT =====
+    // ===== MODE 2: UPLOAD TRANSACTION WITH VOICE =====
+    if (uploadedFiles?.voice) {
+      return await handleVoiceTransaction(req, res, uploadedFiles.voice, message);
+    }
+    // ===== MODE 3: TEXT CHAT =====
     return await handleTextChat(req, res, message);
 
   } catch (error) {
-    console.error('❌ Lỗi trong geminiChatController:', error);
     res.status(500).json({
       message: 'Ôi không, mình bị lỗi rồi. Thử lại sau vài giây nhé!',
       data: { error: error.message }
@@ -117,184 +116,149 @@ export const geminiChatController = async (req, res) => {
   }
 };
 
+// VOICE TRANSACTION
+async function handleVoiceTransaction(req, res, voice, userMessage) {
+  try {
+    console.log('🎤 Voice transaction...');
+    const categories = await Category.find({
+      $or: [{ scope: 'system', isDefault: true }, { scope: 'personal', userId: req.userId }]
+    });
+    const categoriesPayload = categories.map(c => ({ id: c._id, name: c.name, type: c.type }));
+
+    let voiceAnalysis;
+    try {
+      voiceAnalysis = await analyzeVoiceTransaction(voice.url, categoriesPayload);
+    } catch (error) {
+      return res.json({
+        message: 'Hmm, mình không nghe rõ. Bạn nói lại hoặc nhập tay được không?',
+        data: { requireManualInput: true, voice: { url: voice.url, publicId: voice.publicId } }
+      });
+    }
+
+    if (isIrrelevant(voiceAnalysis)) {
+      return res.json({
+        message: 'Voice này không liên quan đến giao dịch.',
+        data: { isIrrelevant: true, voice: { url: voice.url, publicId: voice.publicId, transcript: voiceAnalysis.voiceTranscript } }
+      });
+    }
+
+    if (parseFloat(voiceAnalysis.confidence) < REQUIRED_CONFIDENCE) {
+      return res.json({
+        message: `Mình chỉ nghe rõ ${(parseFloat(voiceAnalysis.confidence) * 100).toFixed(0)}%. Kiểm tra lại nhé!`,
+        data: {
+          requireManualInput: true, suggestion: voiceAnalysis,
+          voice: { url: voice.url, publicId: voice.publicId, transcript: voiceAnalysis.voiceTranscript }
+        }
+      });
+    }
+
+    let category = await Category.findOne({
+      name: { $regex: new RegExp(`^${escapeRegExp(voiceAnalysis.category_name)}$`, 'i') },
+      type: voiceAnalysis.type,
+      $or: [{ scope: 'system', isDefault: true }, { scope: 'personal', userId: req.userId }]
+    });
+
+    if (!category) {
+      category = await Category.create({
+        name: voiceAnalysis.category_name, type: voiceAnalysis.type,
+        keywords: voiceAnalysis.category_name.toLowerCase().split(/\s+/),
+        scope: 'personal', userId: req.userId
+      });
+    }
+
+    const transaction = await Transaction.create({
+      userId: req.userId, amount: voiceAnalysis.amount, categoryId: category._id,
+      type: voiceAnalysis.type, inputType: 'voice',
+      description: voiceAnalysis.description || userMessage || 'Giao dịch từ voice',
+      date: voiceAnalysis.date ? dayjs(voiceAnalysis.date).toDate() : new Date(),
+      source: 'voice-input',
+      billMetadata: {
+        voiceUrl: voice.url, voicePublicId: voice.publicId,
+        voiceTranscript: voiceAnalysis.voiceTranscript, confidence: voiceAnalysis.confidence,
+        analyzedAt: new Date()
+      },
+      rawText: voiceAnalysis.voiceTranscript || userMessage, confidence: voiceAnalysis.confidence
+    });
+
+    if (transaction.type === 'income' && transaction.walletId) {
+      await updateGoalProgressFromTransaction(transaction, req.userId);
+    }
+
+    const warning = checkBudgetWarning?.(req.userId, transaction);
+    const typeText = voiceAnalysis.type === 'income' ? 'thu nhập' : 'chi tiêu';
+    let reply = `✅ Đã ghi **${voiceAnalysis.amount.toLocaleString()}đ** ${typeText} vào **${category.name}**`;
+    if (voiceAnalysis.merchant) reply += ` tại **${voiceAnalysis.merchant}**`;
+    if (warning) reply += `\n\n⚠️ ${warning}`;
+
+    const jokePool = voiceAnalysis.type === 'income' ? chat_joke.income : chat_joke.bigSpending;
+    const jokeMessage = jokePool?.[Math.floor(Math.random() * jokePool.length)];
+
+    return res.json({
+      message: reply,
+      data: {
+        transaction: {
+          id: transaction._id, amount: transaction.amount, type: transaction.type,
+          category: { id: category._id, name: category.name },
+          description: transaction.description, date: transaction.date, confidence: voiceAnalysis.confidence
+        },
+        voice: { url: voice.url, publicId: voice.publicId, transcript: voiceAnalysis.voiceTranscript },
+        jokeMessage
+      }
+    });
+  } catch (error) {
+    console.error('Lỗi voice:', error);
+    throw error;
+  }
+}
+
 /**
  * Xử lý upload bill và tự động tạo transaction
  */
 async function handleBillUpload(req, res, uploadedFiles, userMessage) {
   try {
     const { billImage, voice } = uploadedFiles;
-    const manualAmount = req.body && req.body.manualAmount ? Number(req.body.manualAmount) : undefined;
-    const manualCategory = req.body && typeof req.body.manualCategory === 'string' ? req.body.manualCategory : undefined;
+    const manualAmount = req.body?.manualAmount ? Number(req.body.manualAmount) : undefined;
+    const manualCategory = req.body?.manualCategory || undefined;
 
     const categories = await Category.find({
-      $or: [
-        { scope: 'system', isDefault: true },
-        { scope: 'personal', userId: req.userId }
-      ]
+      $or: [{ scope: 'system', isDefault: true }, { scope: 'personal', userId: req.userId }]
     });
-    const categoriesPayload = categories.map(c => ({
-      id: c._id,
-      name: c.name,
-      type: c.type,
-    }));
-    console.log('📝 Categories payload:', categoriesPayload);
-
-    const pending = pendingMediaByUser.get(req.userId) || {};
-    const currentImage = billImage || pending.billImage || null;
-    const currentVoice = voice || pending.voice || null;
-    const hasBoth = !!currentImage && !!currentVoice;
-    const onlyImage = !!currentImage && !currentVoice;
-    const onlyVoice = !!currentVoice && !currentImage;
+    const categoriesPayload = categories.map(c => ({ id: c._id, name: c.name, type: c.type }));
 
     let billAnalysis;
     try {
-      const imageUrl = currentImage?.url || null;
-      billAnalysis = await analyzeBillComplete(
-        imageUrl,
-        currentVoice?.url || null,
-        categoriesPayload
-      );
+      billAnalysis = await analyzeBillComplete(billImage.url, voice?.url || null, categoriesPayload);
     } catch (error) {
-      if (onlyImage) {
-        return res.json({
-          message: 'Ảnh này có vẻ không liên quan đến giao dịch/bill. Mình sẽ không ghi giao dịch.',
-          data: {
-            isIrrelevant: true,
-            billImage: currentImage ? {
-              url: currentImage.url,
-              thumbnail: currentImage.thumbnail,
-              publicId: currentImage.publicId
-            } : null
-          }
-        });
-      }
-      if (onlyVoice) {
-        return res.json({
-          message: 'Voice này có vẻ không liên quan đến giao dịch/bill. Mình sẽ không ghi giao dịch.',
-          data: {
-            isIrrelevant: true,
-            voice: currentVoice ? {
-              url: currentVoice.url,
-              publicId: currentVoice.publicId
-            } : null
-          }
-        });
-      }
       return res.json({
-        message: 'Hmm, mình không đọc được bill này rõ lắm. Bạn có thể nhập thủ công không?',
+        message: 'Hmm, không đọc được bill. Nhập thủ công nhé!',
         data: {
           requireManualInput: true,
-          billImage: currentImage ? {
-            url: currentImage.url,
-            thumbnail: currentImage.thumbnail,
-            publicId: currentImage.publicId
-          } : null,
-          voice: currentVoice ? {
-            url: currentVoice.url,
-            publicId: currentVoice.publicId
-          } : null
+          billImage: { url: billImage.url, thumbnail: billImage.thumbnail, publicId: billImage.publicId },
+          voice: voice ? { url: voice.url, publicId: voice.publicId } : null
         }
       });
     }
 
     if (isIrrelevant(billAnalysis)) {
-      if (onlyImage) {
-        return res.json({
-          message: 'Ảnh này không liên quan đến giao dịch/bill. Mình sẽ không ghi giao dịch.',
-          data: {
-            isIrrelevant: true,
-            billImage: currentImage ? {
-              url: currentImage.url,
-              thumbnail: currentImage.thumbnail,
-              publicId: currentImage.publicId
-            } : null
-          }
-        });
-      }
-      if (onlyVoice) {
-        return res.json({
-          message: 'Voice này không liên quan đến giao dịch/bill. Mình sẽ không ghi giao dịch.',
-          data: {
-            isIrrelevant: true,
-            voice: currentVoice ? {
-              url: currentVoice.url,
-              publicId: currentVoice.publicId,
-              transcript: billAnalysis.voiceTranscript || null
-            } : null
-          }
-        });
-      }
       return res.json({
-        message: 'Các nội dung gửi lên không liên quan đến bill/giao dịch. Mình sẽ không ghi giao dịch.',
+        message: 'Ảnh này không liên quan đến bill.',
         data: {
           isIrrelevant: true,
-          billImage: currentImage ? {
-            url: currentImage.url,
-            thumbnail: currentImage.thumbnail,
-            publicId: currentImage.publicId
-          } : null,
-          voice: currentVoice ? {
-            url: currentVoice.url,
-            publicId: currentVoice.publicId,
-            transcript: billAnalysis.voiceTranscript || null
-          } : null
+          billImage: { url: billImage.url, thumbnail: billImage.thumbnail, publicId: billImage.publicId },
+          voice: voice ? { url: voice.url, publicId: voice.publicId, transcript: billAnalysis.voiceTranscript } : null
         }
       });
     }
 
-    if (hasBoth && parseFloat(billAnalysis.confidence) < REQUIRED_CONFIDENCE) {
+    if (parseFloat(billAnalysis.confidence) < REQUIRED_CONFIDENCE) {
       return res.json({
-        message: `Mình chỉ đọc được khoảng ${(parseFloat(billAnalysis.confidence) * 100).toFixed(0)}% thôi. Bạn kiểm tra lại giúp mình nhé!`,
+        message: `Chỉ đọc được ${(parseFloat(billAnalysis.confidence) * 100).toFixed(0)}%. Kiểm tra lại nhé!`,
         data: {
-          requireManualInput: true,
-          suggestion: billAnalysis,
-          billImage: currentImage ? {
-            url: currentImage.url,
-            thumbnail: currentImage.thumbnail,
-            publicId: currentImage.publicId
-          } : null,
-          voice: currentVoice ? {
-            url: currentVoice.url,
-            publicId: currentVoice.publicId,
-            transcript: billAnalysis.voiceTranscript
-          } : null
+          requireManualInput: true, suggestion: billAnalysis,
+          billImage: { url: billImage.url, thumbnail: billImage.thumbnail, publicId: billImage.publicId },
+          voice: voice ? { url: voice.url, publicId: voice.publicId, transcript: billAnalysis.voiceTranscript } : null
         }
       });
-    }
-
-    if (!hasBoth) {
-      pendingMediaByUser.set(req.userId, {
-        billImage: currentImage || null,
-        voice: currentVoice || null
-      });
-      if (onlyVoice) {
-        return res.json({
-          message: 'Đã nhận voice. Bạn gửi thêm ảnh hóa đơn để mình ghi giao dịch nhé!',
-          data: {
-            pending: true,
-            need: 'billImage',
-            voice: currentVoice ? {
-              url: currentVoice.url,
-              publicId: currentVoice.publicId,
-              transcript: billAnalysis.voiceTranscript || null
-            } : null
-          }
-        });
-      }
-      if (onlyImage) {
-        return res.json({
-          message: 'Đã nhận ảnh hóa đơn. Bạn có thể gửi thêm voice mô tả để mình xác nhận và ghi giao dịch.',
-          data: {
-            pending: true,
-            need: 'voice',
-            billImage: currentImage ? {
-              url: currentImage.url,
-              thumbnail: currentImage.thumbnail,
-              publicId: currentImage.publicId
-            } : null
-          }
-        });
-      }
     }
 
     const finalAmount = manualAmount || billAnalysis.amount;
@@ -302,111 +266,69 @@ async function handleBillUpload(req, res, uploadedFiles, userMessage) {
     const finalType = billAnalysis.type;
 
     let category = await Category.findOne({
-      name: { $regex: new RegExp(`^${escapeRegExp(finalCategoryName)}$`, 'i') },
-      type: finalType,
-      $or: [
-        { scope: 'system', isDefault: true },
-        { scope: 'personal', userId: req.userId }
-      ]
+      name: { $regex: new RegExp(`^${escapeRegExp(finalCategoryName)}$`, 'i') }, type: finalType,
+      $or: [{ scope: 'system', isDefault: true }, { scope: 'personal', userId: req.userId }]
     });
 
     if (!category) {
       category = await Category.create({
-        name: finalCategoryName,
-        type: finalType,
+        name: finalCategoryName, type: finalType,
         keywords: finalCategoryName.toLowerCase().split(/\s+/),
-        scope: 'personal',
-        userId: req.userId
+        scope: 'personal', userId: req.userId
       });
     }
 
-    // Tạo transaction
+    let description = userMessage || billAnalysis.description || '';
+    if (billAnalysis.items?.length > 0) {
+      description = billAnalysis.items
+        .map(item => `${item.name} (${item.quantity}x${item.price?.toLocaleString()}đ)`)
+        .join(', ');
+    } else if (billAnalysis.merchant) {
+      description = `Thanh toán tại ${billAnalysis.merchant}`;
+    }
+
     const transaction = await Transaction.create({
-      userId: req.userId,
-      amount: finalAmount,
-      categoryId: category._id,
-      type: finalType,
-      inputType: 'bill_scan',
-      description: userMessage || billAnalysis.description || `${billAnalysis.merchant || 'Thanh toán'}`,
-      date: billAnalysis.date ? dayjs(billAnalysis.date).toDate() : new Date(),
+      userId: req.userId, amount: finalAmount, categoryId: category._id, type: finalType,
+      inputType: 'bill_scan', description, date: billAnalysis.date ? dayjs(billAnalysis.date).toDate() : new Date(),
       source: 'bill-upload',
-
-      // Metadata từ bill
       billMetadata: {
-        imageUrl: billImage?.url || null,
-        thumbnail: billImage?.thumbnail || null,
-        publicId: billImage?.publicId || null,
-        merchant: billAnalysis.merchant,
-        items: billAnalysis.items || [],
-        confidence: billAnalysis.confidence,
-        voiceUrl: voice?.url || null,
-        voicePublicId: voice?.publicId || null,
-        voiceTranscript: billAnalysis.voiceTranscript || null,
-        analyzedAt: new Date()
+        imageUrl: billImage.url, thumbnail: billImage.thumbnail, publicId: billImage.publicId,
+        merchant: billAnalysis.merchant, items: billAnalysis.items || [], confidence: billAnalysis.confidence,
+        voiceUrl: voice?.url, voicePublicId: voice?.publicId,
+        voiceTranscript: billAnalysis.voiceTranscript, analyzedAt: new Date()
       },
-
-      rawText: billAnalysis.voiceTranscript || userMessage || billAnalysis.description,
-      confidence: billAnalysis.confidence,
+      rawText: billAnalysis.voiceTranscript || userMessage || billAnalysis.description, confidence: billAnalysis.confidence
     });
 
-    // Cập nhật goal nếu là income
     if (transaction.type === 'income' && transaction.walletId) {
       await updateGoalProgressFromTransaction(transaction, req.userId);
     }
 
-    // Check budget warning
     const warning = checkBudgetWarning?.(req.userId, transaction);
-
-    // Tạo reply message
     const typeText = finalType === 'income' ? 'thu nhập' : 'chi tiêu';
     let reply = `✅ Đã ghi **${finalAmount.toLocaleString()}đ** ${typeText} vào **${category.name}**`;
+    if (billAnalysis.merchant) reply += ` tại **${billAnalysis.merchant}**`;
+    if (warning) reply += `\n\n⚠️ ${warning}`;
 
-    if (billAnalysis.merchant) {
-      reply += ` tại **${billAnalysis.merchant}**`;
-    }
-
-    if (warning) {
-      reply += `\n\n⚠️ ${warning}`;
-    }
-
-    // Thêm joke
     const jokePool = finalType === 'income' ? chat_joke.income : chat_joke.bigSpending;
-    const jokeMessage = jokePool?.[Math.floor(Math.random() * jokePool.length)] || null;
+    const jokeMessage = jokePool?.[Math.floor(Math.random() * jokePool.length)];
 
-    const response = {
+    return res.json({
       message: reply,
       data: {
         transaction: {
-          id: transaction._id,
-          amount: transaction.amount,
-          type: transaction.type,
-          category: {
-            id: category._id,
-            name: category.name,
-          },
-          merchant: billAnalysis.merchant,
-          confidence: billAnalysis.confidence
+          id: transaction._id, amount: transaction.amount, type: transaction.type,
+          category: { id: category._id, name: category.name },
+          description: transaction.description, merchant: billAnalysis.merchant,
+          date: transaction.date, confidence: billAnalysis.confidence
         },
-        billImage: currentImage ? {
-          url: currentImage.url,
-          thumbnail: currentImage.thumbnail,
-          publicId: currentImage.publicId
-        } : null,
-        voice: currentVoice ? {
-          url: currentVoice.url,
-          publicId: currentVoice.publicId,
-          transcript: billAnalysis.voiceTranscript
-        } : null,
-        items: billAnalysis.items,
-        jokeMessage
+        billImage: { url: billImage.url, thumbnail: billImage.thumbnail, publicId: billImage.publicId },
+        voice: voice ? { url: voice.url, publicId: voice.publicId, transcript: billAnalysis.voiceTranscript } : null,
+        items: billAnalysis.items, jokeMessage
       }
-    };
-
-    pendingMediaByUser.delete(req.userId);
-    return res.json(response);
-
+    });
   } catch (error) {
-    console.error('Lỗi handleBillUpload:', error);
+    console.error('Lỗi bill:', error);
     throw error;
   }
 }

@@ -106,7 +106,7 @@ walletSchema.statics.getOrCreateDefaultWallet = async function (userId, scope, f
         },
         'default_receive': {
             name: 'Ví Nhận Tiền Mặc Định',
-            description: 'Ví tự động nhận tiền từ gia đình',
+            description: 'Ví nhận tiền tự động',
             icon: '💰',
             type: 'Nhận tiền'
         },
@@ -126,19 +126,14 @@ walletSchema.statics.getOrCreateDefaultWallet = async function (userId, scope, f
 
     const config = walletConfig[scope];
     if (!config) throw new Error('Invalid wallet scope');
-
-    // Tìm ví mặc định hiện có
     const query = {
         userId,
         scope,
         isSystemWallet: true
     };
     if (familyId) query.familyId = familyId;
-
     let wallet = await this.findOne(query);
-
     if (!wallet) {
-        // Tạo ví mới
         wallet = new this({
             userId,
             familyId,

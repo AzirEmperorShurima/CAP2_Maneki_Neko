@@ -850,6 +850,7 @@ export const getWalletTransactions = async (req, res) => {
         category: plain.categoryId ? {
           id: plain.categoryId._id,
           name: plain.categoryId.name,
+          image: plain.categoryId.image || '',
         } : { name: 'Không xác định' },
         wallet: plain.walletId ? {
           id: plain.walletId._id,
@@ -867,7 +868,7 @@ export const getWalletTransactions = async (req, res) => {
 
       const [transactions, total] = await Promise.all([
         Transaction.find(match)
-          .populate('categoryId', 'name')
+          .populate('categoryId', 'name image')
           .populate('userId', 'username avatar')
           .populate('walletId', 'name balance scope type icon')
           .sort({ date: -1 })
@@ -898,7 +899,7 @@ export const getWalletTransactions = async (req, res) => {
 
     const [incomeList, incomeTotal, expenseList, expenseTotal] = await Promise.all([
       transaction.find(matchIncome)
-        .populate('categoryId', 'name')
+        .populate('categoryId', 'name image')
         .populate('userId', 'username avatar')
         .populate('walletId', 'name balance scope type icon')
         .sort({ date: -1 })
@@ -906,7 +907,7 @@ export const getWalletTransactions = async (req, res) => {
         .limit(limit),
       transaction.countDocuments(matchIncome),
       transaction.find(matchExpense)
-        .populate('categoryId', 'name')
+        .populate('categoryId', 'name image')
         .populate('userId', 'username avatar')
         .populate('walletId', 'name balance scope type icon')
         .sort({ date: -1 })
