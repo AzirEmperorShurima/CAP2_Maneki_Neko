@@ -85,10 +85,8 @@ export const createTransaction = async (req, res) => {
                 }))
             });
         }
-
-        // FIX: Parse date từ req.body gốc thay vì dùng value đã được Joi validate
         const { amount, type, expense_for, description, isShared, categoryId, walletId } = value;
-        const originalDate = req.body.date; // Lấy raw date trước khi Joi parse
+        const originalDate = req.body.date;
 
         let wallet = null;
         let walletCreated = false;
@@ -175,7 +173,7 @@ export const createTransaction = async (req, res) => {
             const budgetWarnings = await checkBudgetWarning(req.userId, transaction);
 
             const populatedTransaction = await Transaction.findById(transaction._id)
-                .populate('categoryId', 'name')
+                .populate('categoryId', 'name image')
                 .populate('walletId', 'name balance scope type icon');
 
             const normalizedTransaction = (() => {
@@ -733,8 +731,10 @@ export const getTransactions = async (req, res) => {
                 category: plain.categoryId ? {
                     id: plain.categoryId._id,
                     name: plain.categoryId.name,
+                    image: plain.categoryId.image || ""
                 } : {
                     name: 'Không xác định',
+                    image: ""
                 },
                 wallet: plain.walletId ? {
                     id: plain.walletId._id,
