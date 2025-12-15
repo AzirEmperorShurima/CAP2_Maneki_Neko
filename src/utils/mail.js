@@ -87,7 +87,7 @@ export async function sendEmail(to, subject, html) {
                 html,
             });
 
-            console.log('✅ Email sent via Resend:', result.id);
+            console.log('✅ Email sent via Resend:', result);
 
         } else {
             // ========== LOCAL: Dùng Nodemailer ==========
@@ -106,7 +106,7 @@ export async function sendEmail(to, subject, html) {
                 html,
             });
 
-            console.log('✅ Email sent via Nodemailer:', result.messageId);
+            console.log('✅ Email sent via Nodemailer:', result);
         }
 
         return result;
@@ -119,7 +119,6 @@ export async function sendEmail(to, subject, html) {
             to,
             subject
         });
-        throw error;
     }
 }
 

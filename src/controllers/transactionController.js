@@ -460,7 +460,7 @@ export const getTransactionById = async (req, res) => {
         const { transactionId } = paramValue;
         console.log(req.userId, transactionId, req.params);
         const transaction = await Transaction.findOne({ _id: transactionId, userId: req.userId })
-            .populate('categoryId', 'name')
+            .populate('categoryId', 'name image')
             .populate('walletId', 'name balance');
 
         if (!transaction) {
@@ -566,7 +566,7 @@ export const getTransactions = async (req, res) => {
 
         const [transactions, total] = await Promise.all([
             Transaction.find(match)
-                .populate('categoryId', 'name')
+                .populate('categoryId', 'name image')
                 .populate('userId', 'username')
                 .populate('walletId', 'name balance scope type icon')
                 .sort({ date: -1 })
