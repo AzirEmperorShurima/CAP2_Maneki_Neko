@@ -272,223 +272,181 @@ export const updateTransaction = async (req, res) => {
             return res.status(404).json({ error: 'Không tìm thấy giao dịch' });
         }
 
-        // Phân loại các trường cần update
-        const criticalFields = ['amount', 'type', 'walletId'];
-        const secondaryFields = [
-            'date', 'description', 'isShared', 'categoryId',
-            'paymentMethod', 'expense_for', 'inputType',
-            'ocrText', 'voiceText', 'rawText', 'confidence',
-            'isAutoCategorized', 'receiptImage', 'currency'
-        ];
-
-        // Parse date nếu có (giống createTransaction)
+        // Parse date giống createTransaction
         if (value.date !== undefined) {
-            const parseDate = (dateInput) => {
-                if (!dateInput) return undefined;
-                if (dateInput instanceof Date) return dateInput;
-
-                const dateStr = String(dateInput).trim();
-
-                if (/^\d{1,2}-\d{1,2}-\d{4}$/.test(dateStr)) {
-                    const [day, month, year] = dateStr.split('-').map(Number);
-                    const parsed = new Date(year, month - 1, day);
-                    parsed.setHours(0, 0, 0, 0);
-                    return parsed;
-                }
-
-                if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
-                    const [year, month, day] = dateStr.split('-').map(Number);
-                    const parsed = new Date(year, month - 1, day);
-                    parsed.setHours(0, 0, 0, 0);
-                    return parsed;
-                }
-
-                const parsed = new Date(dateStr);
-                return isNaN(parsed.getTime()) ? undefined : parsed;
-            };
-
             const originalDate = req.body.date;
-            const parsedDate = parseDate(originalDate);
+            const parsedDate = parseDate(originalDate); // giả sử bạn đã có hàm parseDate toàn cục như trong create
             if (parsedDate) {
                 value.date = parsedDate;
+            } else {
+                return res.status(400).json({ error: 'Định dạng ngày không hợp lệ' });
             }
         }
 
-        // FIX: Kiểm tra xem có thay đổi gì không
-        const hasAnyChanges = [...criticalFields, ...secondaryFields].some(field => {
+        // Kiểm tra có thay đổi gì không
+        const fieldsToCheck = ['amount', 'type', 'walletId', 'date', 'description', 'isShared', 'categoryId',
+            'paymentMethod', 'expense_for', 'inputType', 'ocrText', 'voiceText', 'rawText',
+            'confidence', 'isAutoCategorized', 'receiptImage', 'currency'];
+
+        const hasAnyChanges = fieldsToCheck.some(field => {
             if (value[field] === undefined) return false;
 
-            // Special handling cho date - so sánh timestamp
             if (field === 'date' && value[field] instanceof Date && transaction[field] instanceof Date) {
                 return value[field].getTime() !== transaction[field].getTime();
             }
-
-            // Special handling cho ObjectId
             if (field === 'walletId' || field === 'categoryId') {
-                const newValue = value[field] ? value[field].toString() : null;
-                const oldValue = transaction[field] ? transaction[field].toString() : null;
-                return newValue !== oldValue;
+                const newVal = value[field] ? value[field].toString() : null;
+                const oldVal = transaction[field] ? transaction[field].toString() : null;
+                return newVal !== oldVal;
             }
-
             return value[field] !== transaction[field];
         });
 
         if (!hasAnyChanges) {
-            const populatedTransaction = await Transaction.findById(transaction._id)
-                .populate('categoryId', 'name')
+            // Populate đầy đủ giống create
+            const populated = await Transaction.findById(transaction._id)
+                .populate('categoryId', 'name image')
                 .populate('walletId', 'name balance scope type icon');
+
+            const normalized = normalizeTransaction(populated); // hàm helper bên dưới
 
             return res.json({
                 message: 'Không có thay đổi nào được thực hiện',
-                data: populatedTransaction
-            });
-        }
-
-        const hasCriticalChanges = criticalFields.some(field =>
-            value[field] !== undefined && value[field] !== transaction[field]
-        );
-
-        if (!hasCriticalChanges) {
-            secondaryFields.forEach(field => {
-                if (value[field] !== undefined) {
-                    transaction[field] = value[field];
+                data: {
+                    transaction: normalized,
+                    walletInfo: {
+                        id: populated.walletId._id.toString(),
+                        name: populated.walletId.name,
+                        balance: populated.walletId.balance
+                    }
                 }
             });
-
-            await transaction.save();
-            const populatedTransaction = await Transaction.findById(transaction._id)
-                .populate('categoryId', 'name')
-                .populate('walletId', 'name balance scope type icon');
-
-            return res.json({
-                message: 'Cập nhật giao dịch thành công',
-                data: populatedTransaction
-            });
         }
 
-        const { amount, type, walletId } = value;
-
+        // Lưu giá trị cũ để hoàn nguyên
         const oldAmount = transaction.amount;
         const oldType = transaction.type;
         const oldWalletId = transaction.walletId.toString();
-        const newWalletId = walletId ? walletId.toString() : oldWalletId;
 
-        // FIX: Kiểm tra xem có thực sự đổi ví không
+        const newAmount = value.amount !== undefined ? value.amount : oldAmount;
+        const newType = value.type !== undefined ? value.type : oldType;
+        const newWalletId = value.walletId !== undefined ? value.walletId.toString() : oldWalletId;
+
         const isWalletChanged = newWalletId !== oldWalletId;
 
-        console.log('🔄 Update info:', {
-            oldAmount, newAmount: amount,
-            oldType, newType: type,
-            oldWalletId, newWalletId,
-            isWalletChanged
-        });
-
-        // BƯỚC 1: Hoàn nguyên ví cũ
-        if (oldWalletId) {
-            const oldWallet = await Wallet.findById(oldWalletId);
-            if (oldWallet) {
-                if (oldType === 'expense') {
-                    oldWallet.balance += oldAmount; // Hoàn tiền
-                } else if (oldType === 'income') {
-                    oldWallet.balance -= oldAmount; // Trừ tiền
-                }
-                await oldWallet.save();
-                console.log(`✅ Restored old wallet: ${oldWallet.name}, balance: ${oldWallet.balance}`);
-            }
+        // B1: Hoàn nguyên ví cũ
+        const oldWallet = await Wallet.findById(oldWalletId);
+        if (oldWallet) {
+            if (oldType === 'expense') oldWallet.balance += oldAmount;
+            else if (oldType === 'income') oldWallet.balance -= oldAmount;
+            await oldWallet.save();
         }
 
-        // BƯỚC 2: Hoàn nguyên budget (nếu là expense)
+        // B2: Hoàn nguyên budget cũ (nếu là expense cũ)
         if (oldType === 'expense') {
-            const restoreTransaction = {
-                ...transaction.toObject(),
-                amount: -oldAmount
-            };
-            await updateBudgetSpentAmounts(req.userId, restoreTransaction);
+            await updateBudgetSpentAmounts(req.userId, { ...transaction.toObject(), amount: -oldAmount });
         }
 
-        // BƯỚC 3: Cập nhật TẤT CẢ các thông tin transaction
-        if (amount !== undefined) transaction.amount = amount;
-        if (type !== undefined) transaction.type = type;
-        if (walletId !== undefined) transaction.walletId = walletId;
-
-        secondaryFields.forEach(field => {
-            if (value[field] !== undefined) {
-                transaction[field] = value[field];
-            }
+        // B3: Cập nhật transaction với tất cả các field mới
+        Object.keys(value).forEach(key => {
+            transaction[key] = value[key];
         });
-
         await transaction.save();
 
-        // BƯỚC 4: Xử lý ví mới
-        let newWallet = null;
-        if (transaction.walletId) {
-            newWallet = await Wallet.findById(transaction.walletId);
+        // B4: Xử lý ví mới
+        let finalWallet = await Wallet.findById(transaction.walletId);
+        let lowBalanceWarning = null;
 
-            if (!newWallet) {
-                if (transaction.type === 'income') {
-                    newWallet = await getOrCreateDefaultWallet(req.userId);
-                } else if (transaction.type === 'expense') {
-                    newWallet = await getOrCreateDefaultExpenseWallet(req.userId);
-                }
-                if (newWallet) {
-                    transaction.walletId = newWallet._id;
-                    await transaction.save();
-                }
+        if (!finalWallet) {
+            // Tạo ví mặc định nếu cần
+            if (transaction.type === 'income') {
+                finalWallet = await getOrCreateDefaultWallet(req.userId);
+            } else if (transaction.type === 'expense') {
+                finalWallet = await getOrCreateDefaultExpenseWallet(req.userId);
             }
-
-            if (newWallet) {
-                // FIX: CHỈ kiểm tra số dư khi đổi ví khác
-                if (isWalletChanged && transaction.type === 'expense') {
-                    if (newWallet.balance < transaction.amount) {
-                        // Rollback transaction
-                        await transaction.deleteOne();
-
-                        // Rollback wallet
-                        if (oldWalletId) {
-                            const rollbackWallet = await Wallet.findById(oldWalletId);
-                            if (rollbackWallet) {
-                                if (oldType === 'expense') {
-                                    rollbackWallet.balance -= oldAmount;
-                                } else {
-                                    rollbackWallet.balance += oldAmount;
-                                }
-                                await rollbackWallet.save();
-                            }
-                        }
-
-                        return res.status(400).json({
-                            error: 'Số dư ví mới không đủ',
-                            currentBalance: newWallet.balance,
-                            required: transaction.amount
-                        });
-                    }
-                }
-
-                // Apply changes to wallet
-                if (transaction.type === 'expense') {
-                    newWallet.balance -= transaction.amount;
-                } else if (transaction.type === 'income') {
-                    newWallet.balance += transaction.amount;
-                }
-
-                await newWallet.save();
-                console.log(`✅ Updated wallet: ${newWallet.name}, balance: ${newWallet.balance}`);
+            if (finalWallet) {
+                transaction.walletId = finalWallet._id;
+                await transaction.save();
             }
         }
 
-        // BƯỚC 5: Cập nhật budget mới (nếu là expense)
+        if (finalWallet) {
+            // Kiểm tra số dư chỉ khi đổi ví và là expense
+            if (isWalletChanged && transaction.type === 'expense' && finalWallet.balance < transaction.amount) {
+                // Rollback toàn bộ
+                lowBalanceWarning = {
+                    code: 'LOW_BALANCE',
+                    walletId: finalWallet._id,
+                    currentBalance: finalWallet.balance,
+                    required: transaction.amount,
+                    shortfall: transaction.amount - finalWallet.balance
+                };
+
+                // Hoàn nguyên transaction
+                await transaction.deleteOne();
+
+                // Hoàn nguyên ví cũ
+                if (oldWallet) {
+                    if (oldType === 'expense') oldWallet.balance -= oldAmount;
+                    else if (oldType === 'income') oldWallet.balance += oldAmount;
+                    await oldWallet.save();
+                }
+
+                return res.status(400).json({
+                    error: 'Số dư ví mới không đủ',
+                    lowBalanceWarning
+                });
+            }
+
+            // Áp dụng thay đổi vào ví mới
+            if (transaction.type === 'expense') {
+                finalWallet.balance -= transaction.amount;
+            } else if (transaction.type === 'income') {
+                finalWallet.balance += transaction.amount;
+            }
+            await finalWallet.save();
+        }
+
+        // B5: Cập nhật budget mới (nếu là expense mới)
+        let budgetWarnings = null;
         if (transaction.type === 'expense') {
             await updateBudgetSpentAmounts(req.userId, transaction);
+            const warnings = await checkBudgetWarning(req.userId, transaction);
+            if (warnings && warnings.length > 0) {
+                budgetWarnings = {
+                    count: warnings.length,
+                    hasError: warnings.some(w => w.level === 'error'),
+                    hasCritical: warnings.some(w => w.level === 'critical'),
+                    warnings
+                };
+            }
         }
 
-        // Populate và return
-        const populatedTransaction = await Transaction.findById(transaction._id)
-            .populate('categoryId', 'name')
-            .populate('walletId', 'name balance scope type icon');
+        // Populate đúng theo type (giống create)
+        const populateOptions = [
+            { path: 'walletId', select: 'name balance scope type icon' },
+            transaction.type === 'expense'
+                ? { path: 'categoryId', select: 'name image' }
+                : { path: 'categoryId', select: 'name' }
+        ];
 
-        res.json({
+        const populatedTransaction = await Transaction.findById(transaction._id).populate(populateOptions);
+
+        const normalizedTransaction = normalizeTransaction(populatedTransaction);
+
+        // Response giống hệt create
+        return res.json({
             message: 'Cập nhật giao dịch thành công',
-            data: populatedTransaction
+            data: {
+                transaction: normalizedTransaction,
+                budgetWarnings,
+                lowBalanceWarning: lowBalanceWarning || null,
+                walletInfo: {
+                    id: finalWallet._id.toString(),
+                    name: finalWallet.name,
+                    balance: finalWallet.balance
+                }
+            }
         });
 
     } catch (err) {
@@ -496,6 +454,19 @@ export const updateTransaction = async (req, res) => {
         res.status(500).json({ error: 'Lỗi server', message: err.message });
     }
 };
+
+// Helper để normalize transaction (tránh lặp code)
+function normalizeTransaction(populated) {
+    const src = populated.toObject ? populated.toObject() : populated;
+    const { _id, walletId, categoryId, __v, ...rest } = src;
+
+    return {
+        ...rest,
+        id: _id.toString(),
+        walletId: walletId ? { ...walletId, id: walletId._id.toString(), _id: undefined } : null,
+        categoryId: categoryId ? { ...categoryId, id: categoryId._id.toString(), _id: undefined } : null
+    };
+}
 
 
 export const deleteTransaction = async (req, res) => {
@@ -703,7 +674,7 @@ export const getTransactions = async (req, res) => {
                 { voiceText: regex },
                 { ocrText: regex },
                 { 'categoryId.name': regex },
-                { expense_for: regex }  
+                { expense_for: regex }
             ];
 
             const existingConditions = { ...match };

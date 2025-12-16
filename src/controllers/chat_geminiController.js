@@ -94,19 +94,24 @@ const findParentBudget = async (userId, childPeriod, periodStart, periodEnd) => 
  */
 export const geminiChatController = async (req, res) => {
   try {
-    const message = (req.body?.message || '').toString();
+    const message = req.body?.message?.trim();
     const uploadedFiles = req.uploadedFiles;
-
     // ===== MODE 1: UPLOAD BILL WITH IMAGE =====
     if (uploadedFiles?.billImage) {
-      return await handleBillUpload(req, res, uploadedFiles, message);
+      return await handleBillUpload(req, res, uploadedFiles);
     }
     // ===== MODE 2: UPLOAD TRANSACTION WITH VOICE =====
     if (uploadedFiles?.voice) {
-      return await handleVoiceTransaction(req, res, uploadedFiles.voice, message);
+      return await handleVoiceTransaction(req, res, uploadedFiles.voice);
     }
     // ===== MODE 3: TEXT CHAT =====
-    return await handleTextChat(req, res, message);
+    if (message && message.length > 0) {
+      return await handleTextChat(req, res, message);
+    }
+    return res.json({
+      message: 'Vui lòng nhập tin nhắn hoặc tải ảnh hóa đơn lên.',
+      data: { requireManualInput: true }
+    });
 
   } catch (error) {
     res.status(500).json({
@@ -198,7 +203,7 @@ async function handleVoiceTransaction(req, res, voice, userMessage) {
       data: {
         transaction: {
           id: transaction._id, amount: transaction.amount, type: transaction.type,
-          category: { id: category._id, name: category.name },
+          category: { id: category._id, name: category.name, type: category.type, image: category.image },
           description: transaction.description, date: transaction.date, confidence: voiceAnalysis.confidence
         },
         voice: { url: voice.url, publicId: voice.publicId, transcript: voiceAnalysis.voiceTranscript },
@@ -318,7 +323,7 @@ async function handleBillUpload(req, res, uploadedFiles, userMessage) {
       data: {
         transaction: {
           id: transaction._id, amount: transaction.amount, type: transaction.type,
-          category: { id: category._id, name: category.name },
+          category: { id: category._id, name: category.name, type: category.type, image: category.image },
           description: transaction.description, merchant: billAnalysis.merchant,
           date: transaction.date, confidence: billAnalysis.confidence
         },

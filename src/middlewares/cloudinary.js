@@ -144,6 +144,7 @@ export const billUploadMiddleware = (req, res, next) => {
         }
 
         if (!req.files || (!req.files.billImage && !req.files.voice)) {
+            console.log('No billImage or voice file uploaded');
             return next();
         }
 

@@ -147,7 +147,7 @@ export async function geminiAnalyzeMultimodal_new(imageUrl = null, voiceUrl = nu
       console.log('⚠️ Error calling gemini-2.5-flash:', e1.message);
       console.log('🔄 Trying gemini-2.0-flash...');
       try {
-        result = await callModel('gemini-2.0-flash');
+        result = await callModel('gemini-2.5-flash-lite');
         console.log('✅ Response from gemini-2.0-flash');
       } catch (e2) {
         console.log('❌ Error calling gemini-2.0-flash:', e2.message);
