@@ -636,7 +636,7 @@ export const getTransactions = async (req, res) => {
         const limit = Math.min(100, parseInt(req.query.limit) || 20);
         const skip = (page - 1) * limit;
 
-        const { type, search, startDate, endDate, month } = req.query;
+        const { type, search, startDate, endDate, month, walletId } = req.query;
 
         let match = {};
 
@@ -646,10 +646,24 @@ export const getTransactions = async (req, res) => {
         }
         match.$or = userFilter;
 
+        // Thêm filter theo walletId
+        if (walletId) {
+            // Kiểm tra wallet tồn tại và user có quyền xem
+            const wallet = await Wallet.findById(walletId);
+            if (!wallet) {
+                return res.status(404).json({ error: 'Không tìm thấy ví' });
+            }
+            if (!wallet.canUserView(req.userId)) {
+                return res.status(403).json({ error: 'Bạn không có quyền xem giao dịch của ví này' });
+            }
+            match.walletId = wallet._id;
+        }
+
         if (type && ['income', 'expense'].includes(type)) {
             match.type = type;
         }
 
+        // Xử lý filter theo tháng
         const monthStr = typeof month === 'string' ? month.trim() : '';
         if (monthStr) {
             const parts = monthStr.split('-');
@@ -666,6 +680,7 @@ export const getTransactions = async (req, res) => {
             }
         }
 
+        // Xử lý filter theo startDate và endDate (nếu không có month)
         if (!match.date && (startDate || endDate)) {
             match.date = {};
             if (startDate) {
@@ -686,7 +701,9 @@ export const getTransactions = async (req, res) => {
             const searchConditions = [
                 { description: regex },
                 { voiceText: regex },
-                { ocrText: regex }
+                { ocrText: regex },
+                { 'categoryId.name': regex },
+                { expense_for: regex }  
             ];
 
             const existingConditions = { ...match };
@@ -710,7 +727,7 @@ export const getTransactions = async (req, res) => {
             Transaction.countDocuments(match)
         ]);
 
-        console.log(`Found ${transactions.length} transactions`);
+        console.log(`Found ${transactions.length} transactions${walletId ? ` for wallet ${walletId}` : ''}`);
 
         const result = transactions.map(t => {
             const plain = t.toObject();
@@ -747,10 +764,27 @@ export const getTransactions = async (req, res) => {
             };
         });
 
+        // Nếu filter theo walletId, thêm thông tin ví vào response
+        let walletInfo = null;
+        if (walletId) {
+            const wallet = await Wallet.findById(walletId).select('name balance type icon scope');
+            if (wallet) {
+                walletInfo = {
+                    id: wallet._id,
+                    name: wallet.name,
+                    balance: wallet.balance,
+                    type: wallet.type,
+                    icon: wallet.icon,
+                    scope: wallet.scope
+                };
+            }
+        }
+
         res.json({
             message: 'Lấy danh sách giao dịch thành công',
             data: {
                 transactions: result,
+                wallet: walletInfo,
                 pagination: {
                     page,
                     limit,
@@ -763,7 +797,7 @@ export const getTransactions = async (req, res) => {
 
     } catch (error) {
         console.error('Lỗi lấy transactions:', error);
-        res.status(500).json({ error: 'Lỗi server' });
+        res.status(500).json({ error: 'Lỗi server', message: error.message });
     }
 };
 

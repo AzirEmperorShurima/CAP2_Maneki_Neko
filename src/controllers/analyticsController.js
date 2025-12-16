@@ -409,285 +409,196 @@ class AnalyticsController {
      * GET /api/analytics/personal/wallet/:walletId/details
      * Chi tiết phân tích cho 1 ví cụ thể
      */
-    async getWalletDetailedAnalytics(req, res) {
-        try {
-            const userId = req.userId;
-            const { walletId } = req.params;
-            const { startDate, endDate } = req.query;
+async getWalletDetailedAnalytics(req, res) {
+    try {
+        const userId = req.userId;
+        const { walletId } = req.params;
+        const { startDate, endDate } = req.query;
 
-            const wallet = await Wallet.findOne({
-                _id: this._toObjectId(walletId),
-                userId: this._toObjectId(userId),
-                isShared: false
-            }).lean();
+        const wallet = await Wallet.findOne({
+            _id: this._toObjectId(walletId),
+            userId: this._toObjectId(userId),
+            isShared: false
+        }).lean();
 
-            if (!wallet) {
-                return res.status(404).json({
-                    error: 'Không tìm thấy ví hoặc không có quyền truy cập'
-                });
-            }
-
-            const dateFilter = this._buildPersonalFilter(userId, {
-                startDate,
-                endDate,
-                walletId
-            });
-            const [analyticsResult, dailyTrendResult] = await Promise.all([
-                Transaction.aggregate([
-                    { $match: dateFilter },
-                    {
-                        $facet: {
-                            summary: [
-                                {
-                                    $group: {
-                                        _id: '$type',
-                                        total: { $sum: '$amount' },
-                                        count: { $sum: 1 }
-                                    }
-                                }
-                            ],
-
-                            categoryBreakdown: [
-                                {
-                                    $group: {
-                                        _id: {
-                                            type: '$type',
-                                            categoryId: '$categoryId'
-                                        },
-                                        total: { $sum: '$amount' },
-                                        count: { $sum: 1 }
-                                    }
-                                },
-                                { $sort: { total: -1 } },
-                                {
-                                    $lookup: {
-                                        from: 'categories',
-                                        localField: '_id.categoryId',
-                                        foreignField: '_id',
-                                        as: 'categoryInfo'
-                                    }
-                                },
-                                {
-                                    $unwind: {
-                                        path: '$categoryInfo',
-                                        preserveNullAndEmptyArrays: true
-                                    }
-                                },
-                                {
-                                    $project: {
-                                        type: '$_id.type',
-                                        categoryId: '$_id.categoryId',
-                                        categoryName: {
-                                            $ifNull: ['$categoryInfo.name', 'Không phân loại']
-                                        },
-                                        image: {
-                                            $ifNull: ['$categoryInfo.image', '']
-                                        },
-                                        total: 1,
-                                        count: 1
-                                    }
-                                }
-                            ]
-                        }
-                    },
-                    {
-                        $project: {
-                            totalIncome: {
-                                $ifNull: [
-                                    {
-                                        $arrayElemAt: [
-                                            {
-                                                $filter: {
-                                                    input: '$summary',
-                                                    cond: { $eq: ['$$this._id', 'income'] }
-                                                }
-                                            },
-                                            0
-                                        ]
-                                    }.total,
-                                    0
-                                ]
-                            },
-                            incomeCount: {
-                                $ifNull: [
-                                    {
-                                        $arrayElemAt: [
-                                            {
-                                                $filter: {
-                                                    input: '$summary',
-                                                    cond: { $eq: ['$$this._id', 'income'] }
-                                                }
-                                            },
-                                            0
-                                        ]
-                                    }.count,
-                                    0
-                                ]
-                            },
-                            totalExpense: {
-                                $ifNull: [
-                                    {
-                                        $arrayElemAt: [
-                                            {
-                                                $filter: {
-                                                    input: '$summary',
-                                                    cond: { $eq: ['$$this._id', 'expense'] }
-                                                }
-                                            },
-                                            0
-                                        ]
-                                    }.total,
-                                    0
-                                ]
-                            },
-                            expenseCount: {
-                                $ifNull: [
-                                    {
-                                        $arrayElemAt: [
-                                            {
-                                                $filter: {
-                                                    input: '$summary',
-                                                    cond: { $eq: ['$$this._id', 'expense'] }
-                                                }
-                                            },
-                                            0
-                                        ]
-                                    }.count,
-                                    0
-                                ]
-                            },
-                            categoryBreakdown: 1,
-                            net: {
-                                $subtract: [
-                                    {
-                                        $ifNull: [
-                                            {
-                                                $arrayElemAt: [
-                                                    {
-                                                        $filter: {
-                                                            input: '$summary',
-                                                            cond: { $eq: ['$$this._id', 'income'] }
-                                                        }
-                                                    },
-                                                    0
-                                                ]
-                                            }.total,
-                                            0
-                                        ]
-                                    },
-                                    {
-                                        $ifNull: [
-                                            {
-                                                $arrayElemAt: [
-                                                    {
-                                                        $filter: {
-                                                            input: '$summary',
-                                                            cond: { $eq: ['$$this._id', 'expense'] }
-                                                        }
-                                                    },
-                                                    0
-                                                ]
-                                            }.total,
-                                            0
-                                        ]
-                                    }
-                                ]
-                            }
-                        }
-                    }
-                ]),
-                Transaction.aggregate([
-                    { $match: dateFilter },
-                    {
-                        $group: {
-                            _id: {
-                                date: { $dateToString: { format: '%Y-%m-%d', date: '$date' } },
-                                type: '$type'
-                            },
-                            total: { $sum: '$amount' }
-                        }
-                    },
-                    { $sort: { '_id.date': -1 } },
-                    { $limit: 28 }
-                ])
-            ]);
-
-            const analytics = analyticsResult[0] || {
-                totalIncome: 0,
-                incomeCount: 0,
-                totalExpense: 0,
-                expenseCount: 0,
-                net: 0,
-                categoryBreakdown: []
-            };
-            const expenseByCategory = analytics.categoryBreakdown
-                .filter(c => c.type === 'expense')
-                .map(c => ({
-                    categoryId: c.categoryId,
-                    categoryName: c.categoryName,
-                    image: c.image || '',
-                    total: c.total,
-                    count: c.count,
-                    percentage: analytics.totalExpense > 0
-                        ? ((c.total / analytics.totalExpense) * 100).toFixed(2)
-                        : '0.00'
-                }));
-
-            const incomeByCategory = analytics.categoryBreakdown
-                .filter(c => c.type === 'income')
-                .map(c => ({
-                    categoryId: c.categoryId,
-                    categoryName: c.categoryName,
-                    image: c.image || '',
-                    total: c.total,
-                    count: c.count,
-                    percentage: analytics.totalIncome > 0
-                        ? ((c.total / analytics.totalIncome) * 100).toFixed(2)
-                        : '0.00'
-                }));
-
-            const dailyMap = {};
-            dailyTrendResult.forEach(d => {
-                if (!dailyMap[d._id.date]) {
-                    dailyMap[d._id.date] = { date: d._id.date, income: 0, expense: 0 };
-                }
-                dailyMap[d._id.date][d._id.type] = d.total;
-            });
-
-            const dailyTrend = Object.values(dailyMap)
-                .sort((a, b) => b.date.localeCompare(a.date));
-
-            return res.status(200).json({
-                message: 'Lấy phân tích chi tiết ví thành công',
-                data: {
-                    wallet: {
-                        id: wallet._id,
-                        name: wallet.name,
-                        type: wallet.type,
-                        icon: wallet.icon || '',
-                        currentBalance: wallet.balance
-                    },
-                    summary: {
-                        totalIncome: analytics.totalIncome,
-                        totalExpense: analytics.totalExpense,
-                        incomeCount: analytics.incomeCount,
-                        expenseCount: analytics.expenseCount,
-                        net: analytics.net
-                    },
-                    expenseByCategory,
-                    incomeByCategory,
-                    dailyTrend
-                }
-            });
-
-        } catch (error) {
-            console.error('❌ Error in getWalletDetailedAnalytics:', error);
-            return res.status(500).json({
-                error: 'Lỗi khi lấy phân tích chi tiết ví',
-                details: error.message
+        if (!wallet) {
+            return res.status(404).json({
+                error: 'Không tìm thấy ví hoặc không có quyền truy cập'
             });
         }
+
+        const dateFilter = this._buildPersonalFilter(userId, {
+            startDate,
+            endDate,
+            walletId
+        });
+
+        const [analyticsResult, dailyTrendResult] = await Promise.all([
+            Transaction.aggregate([
+                { $match: dateFilter },
+                {
+                    $facet: {
+                        summary: [
+                            {
+                                $group: {
+                                    _id: '$type',
+                                    total: { $sum: '$amount' },
+                                    count: { $sum: 1 }
+                                }
+                            }
+                        ],
+                        categoryBreakdown: [
+                            {
+                                $group: {
+                                    _id: {
+                                        type: '$type',
+                                        categoryId: '$categoryId'
+                                    },
+                                    total: { $sum: '$amount' },
+                                    count: { $sum: 1 }
+                                }
+                            },
+                            { $sort: { total: -1 } },
+                            {
+                                $lookup: {
+                                    from: 'categories',
+                                    localField: '_id.categoryId',
+                                    foreignField: '_id',
+                                    as: 'categoryInfo'
+                                }
+                            },
+                            {
+                                $unwind: {
+                                    path: '$categoryInfo',
+                                    preserveNullAndEmptyArrays: true
+                                }
+                            },
+                            {
+                                $project: {
+                                    type: '$_id.type',
+                                    categoryId: '$_id.categoryId',
+                                    categoryName: {
+                                        $ifNull: ['$categoryInfo.name', 'Không phân loại']
+                                    },
+                                    image: {
+                                        $ifNull: ['$categoryInfo.image', '']
+                                    },
+                                    total: 1,
+                                    count: 1
+                                }
+                            }
+                        ]
+                    }
+                }
+            ]),
+            Transaction.aggregate([
+                { $match: dateFilter },
+                {
+                    $group: {
+                        _id: {
+                            date: { $dateToString: { format: '%Y-%m-%d', date: '$date' } },
+                            type: '$type'
+                        },
+                        total: { $sum: '$amount' }
+                    }
+                },
+                { $sort: { '_id.date': -1 } },
+                { $limit: 28 }
+            ])
+        ]);
+
+        // Xử lý dữ liệu analytics
+        const facetResult = analyticsResult[0] || { summary: [], categoryBreakdown: [] };
+        
+        // Tính tổng income và expense từ summary
+        let totalIncome = 0;
+        let incomeCount = 0;
+        let totalExpense = 0;
+        let expenseCount = 0;
+
+        facetResult.summary.forEach(item => {
+            if (item._id === 'income') {
+                totalIncome = item.total || 0;
+                incomeCount = item.count || 0;
+            } else if (item._id === 'expense') {
+                totalExpense = item.total || 0;
+                expenseCount = item.count || 0;
+            }
+        });
+
+        const net = totalIncome - totalExpense;
+
+        // Xử lý expenseByCategory
+        const expenseByCategory = facetResult.categoryBreakdown
+            .filter(c => c.type === 'expense')
+            .map(c => ({
+                categoryId: c.categoryId,
+                categoryName: c.categoryName,
+                image: c.image || '',
+                total: c.total,
+                count: c.count,
+                percentage: totalExpense > 0
+                    ? ((c.total / totalExpense) * 100).toFixed(2)
+                    : '0.00'
+            }));
+
+        // Xử lý incomeByCategory
+        const incomeByCategory = facetResult.categoryBreakdown
+            .filter(c => c.type === 'income')
+            .map(c => ({
+                categoryId: c.categoryId,
+                categoryName: c.categoryName,
+                image: c.image || '',
+                total: c.total,
+                count: c.count,
+                percentage: totalIncome > 0
+                    ? ((c.total / totalIncome) * 100).toFixed(2)
+                    : '0.00'
+            }));
+
+        // Xử lý dailyTrend
+        const dailyMap = {};
+        dailyTrendResult.forEach(d => {
+            if (!dailyMap[d._id.date]) {
+                dailyMap[d._id.date] = { date: d._id.date, income: 0, expense: 0 };
+            }
+            dailyMap[d._id.date][d._id.type] = d.total;
+        });
+
+        const dailyTrend = Object.values(dailyMap)
+            .sort((a, b) => b.date.localeCompare(a.date));
+
+        return res.status(200).json({
+            message: 'Lấy phân tích chi tiết ví thành công',
+            data: {
+                wallet: {
+                    id: wallet._id,
+                    name: wallet.name,
+                    type: wallet.type,
+                    icon: wallet.icon || '',
+                    currentBalance: wallet.balance
+                },
+                summary: {
+                    totalIncome,
+                    totalExpense,
+                    incomeCount,
+                    expenseCount,
+                    net
+                },
+                expenseByCategory,
+                incomeByCategory,
+                dailyTrend
+            }
+        });
+
+    } catch (error) {
+        console.error('❌ Error in getWalletDetailedAnalytics:', error);
+        return res.status(500).json({
+            error: 'Lỗi khi lấy phân tích chi tiết ví',
+            details: error.message
+        });
     }
+}
 
     /**
      * GET /api/analytics/personal/by-category
