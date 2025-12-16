@@ -7,9 +7,10 @@ import { geminiChat } from '../utils/gemini.js';
 import { analyzeBillComplete, analyzeVoiceTransaction } from '../utils/geminiVision.js';
 import dayjs from 'dayjs';
 import 'dayjs/locale/vi.js';
-import { checkBudgetWarning } from '../utils/budget.js';
+import { checkBudgetWarning, updateBudgetSpentAmounts } from '../utils/budget.js';
 import { SYSTEM_PROMPT } from '../utils/geminiChatPrompt.js';
 import { chat_joke } from '../utils/joke.js';
+import { checkWalletBalance, getOrCreateDefaultExpenseWallet, getOrCreateDefaultWallet } from '../utils/wallet.js';
 
 dayjs.locale('vi');
 
@@ -171,9 +172,39 @@ async function handleVoiceTransaction(req, res, voice, userMessage) {
       });
     }
 
+    let wallet = null;
+    if (voiceAnalysis.type === 'income') {
+      wallet = await getOrCreateDefaultWallet(req.userId);
+    } else if (voiceAnalysis.type === 'expense') {
+      wallet = await getOrCreateDefaultExpenseWallet(req.userId);
+    }
+
+    if (!wallet) {
+      return res.json({
+        message: 'Không thể tạo hoặc tìm ví để ghi nhận giao dịch.',
+        data: { requireManualInput: true }
+      });
+    }
+    let lowBalanceWarning = null;
+    if (voiceAnalysis.type === 'expense') {
+      const hasEnoughBalance = await checkWalletBalance(wallet._id, voiceAnalysis.amount);
+      if (!hasEnoughBalance) {
+        lowBalanceWarning = {
+          code: 'LOW_BALANCE',
+          walletId: wallet._id,
+          currentBalance: wallet.balance,
+          required: voiceAnalysis.amount,
+          shortfall: voiceAnalysis.amount - wallet.balance
+        };
+      }
+    }
     const transaction = await Transaction.create({
-      userId: req.userId, amount: voiceAnalysis.amount, categoryId: category._id,
-      type: voiceAnalysis.type, inputType: 'voice',
+      userId: req.userId,
+      walletId: wallet._id,
+      amount: voiceAnalysis.amount,
+      categoryId: category._id,
+      type: voiceAnalysis.type,
+      inputType: 'voice',
       description: voiceAnalysis.description || userMessage || 'Giao dịch từ voice',
       date: voiceAnalysis.date ? dayjs(voiceAnalysis.date).toDate() : new Date(),
       source: 'voice-input',
@@ -182,18 +213,50 @@ async function handleVoiceTransaction(req, res, voice, userMessage) {
         voiceTranscript: voiceAnalysis.voiceTranscript, confidence: voiceAnalysis.confidence,
         analyzedAt: new Date()
       },
-      rawText: voiceAnalysis.voiceTranscript || userMessage, confidence: voiceAnalysis.confidence
+      rawText: voiceAnalysis.voiceTranscript || userMessage,
+      confidence: voiceAnalysis.confidence
     });
 
-    if (transaction.type === 'income' && transaction.walletId) {
+    let budgetWarnings = null;
+
+    if (transaction.type === 'expense') {
+      wallet.balance -= transaction.amount;
+      await wallet.save();
+
+      await updateBudgetSpentAmounts(req.userId, transaction);
+
+      const warnings = await checkBudgetWarning(req.userId, transaction);
+      if (warnings && warnings.length > 0) {
+        budgetWarnings = {
+          count: warnings.length,
+          hasError: warnings.some(w => w.level === 'error'),
+          hasCritical: warnings.some(w => w.level === 'critical'),
+          warnings
+        };
+      }
+
+    } else if (transaction.type === 'income') {
+      wallet.balance += transaction.amount;
+      await wallet.save();
+
       await updateGoalProgressFromTransaction(transaction, req.userId);
     }
 
-    const warning = checkBudgetWarning?.(req.userId, transaction);
     const typeText = voiceAnalysis.type === 'income' ? 'thu nhập' : 'chi tiêu';
     let reply = `✅ Đã ghi **${voiceAnalysis.amount.toLocaleString()}đ** ${typeText} vào **${category.name}**`;
     if (voiceAnalysis.merchant) reply += ` tại **${voiceAnalysis.merchant}**`;
-    if (warning) reply += `\n\n⚠️ ${warning}`;
+    reply += ` từ ví **${wallet.name}**`;
+    reply += `\nSố dư còn lại: **${wallet.balance.toLocaleString()}đ**`;
+
+    if (budgetWarnings && budgetWarnings.warnings.length > 0) {
+      reply += '\n\n⚠️ Cảnh báo ngân sách:';
+      budgetWarnings.warnings.forEach(w => {
+        reply += `\n• ${w.message}`;
+      });
+    }
+    if (lowBalanceWarning) {
+      reply += `\n⚠️ Cảnh báo số dư thấp: **${lowBalanceWarning.shortfall.toLocaleString()}đ**`;
+    }
 
     const jokePool = voiceAnalysis.type === 'income' ? chat_joke.income : chat_joke.bigSpending;
     const jokeMessage = jokePool?.[Math.floor(Math.random() * jokePool.length)];
@@ -202,10 +265,21 @@ async function handleVoiceTransaction(req, res, voice, userMessage) {
       message: reply,
       data: {
         transaction: {
-          id: transaction._id, amount: transaction.amount, type: transaction.type,
+          id: transaction._id,
+          amount: transaction.amount,
+          type: transaction.type,
           category: { id: category._id, name: category.name, type: category.type, image: category.image },
-          description: transaction.description, date: transaction.date, confidence: voiceAnalysis.confidence
+          description: transaction.description,
+          date: transaction.date,
+          confidence: voiceAnalysis.confidence,
+          wallet: {
+            id: wallet._id,
+            name: wallet.name,
+            balance: wallet.balance
+          }
         },
+        lowBalanceWarning: lowBalanceWarning || null,
+        budgetWarnings: budgetWarnings || null,
         voice: { url: voice.url, publicId: voice.publicId, transcript: voiceAnalysis.voiceTranscript },
         jokeMessage
       }
@@ -283,6 +357,32 @@ async function handleBillUpload(req, res, uploadedFiles, userMessage) {
       });
     }
 
+    let wallet = null;
+    if (finalType === 'income') {
+      wallet = await getOrCreateDefaultWallet(req.userId);
+    } else if (finalType === 'expense') {
+      wallet = await getOrCreateDefaultExpenseWallet(req.userId);
+    }
+
+    if (!wallet) {
+      return res.json({
+        message: 'Không thể tạo hoặc tìm ví để ghi nhận giao dịch.',
+        data: { requireManualInput: true }
+      });
+    }
+    let lowBalanceWarning = null;
+    if (billAnalysis.type === 'expense') {
+      const hasEnoughBalance = await checkWalletBalance(wallet._id, billAnalysis.amount);
+      if (!hasEnoughBalance) {
+        lowBalanceWarning = {
+          code: 'LOW_BALANCE',
+          walletId: wallet._id,
+          currentBalance: wallet.balance,
+          required: billAnalysis.amount,
+          shortfall: billAnalysis.amount - wallet.balance
+        };
+      }
+    }
     let description = userMessage || billAnalysis.description || '';
     if (billAnalysis.items?.length > 0) {
       description = billAnalysis.items
@@ -293,8 +393,14 @@ async function handleBillUpload(req, res, uploadedFiles, userMessage) {
     }
 
     const transaction = await Transaction.create({
-      userId: req.userId, amount: finalAmount, categoryId: category._id, type: finalType,
-      inputType: 'bill_scan', description, date: billAnalysis.date ? dayjs(billAnalysis.date).toDate() : new Date(),
+      userId: req.userId,
+      walletId: wallet._id,
+      amount: finalAmount,
+      categoryId: category._id,
+      type: finalType,
+      inputType: 'bill_scan',
+      description,
+      date: billAnalysis.date ? dayjs(billAnalysis.date).toDate() : new Date(),
       source: 'bill-upload',
       billMetadata: {
         imageUrl: billImage.url, thumbnail: billImage.thumbnail, publicId: billImage.publicId,
@@ -302,18 +408,50 @@ async function handleBillUpload(req, res, uploadedFiles, userMessage) {
         voiceUrl: voice?.url, voicePublicId: voice?.publicId,
         voiceTranscript: billAnalysis.voiceTranscript, analyzedAt: new Date()
       },
-      rawText: billAnalysis.voiceTranscript || userMessage || billAnalysis.description, confidence: billAnalysis.confidence
+      rawText: billAnalysis.voiceTranscript || userMessage || billAnalysis.description,
+      confidence: billAnalysis.confidence
     });
 
-    if (transaction.type === 'income' && transaction.walletId) {
+    let budgetWarnings = null;
+
+    if (transaction.type === 'expense') {
+      wallet.balance -= transaction.amount;
+      await wallet.save();
+      await updateBudgetSpentAmounts(req.userId, transaction);
+
+      const warnings = await checkBudgetWarning(req.userId, transaction);
+      if (warnings && warnings.length > 0) {
+        budgetWarnings = {
+          count: warnings.length,
+          hasError: warnings.some(w => w.level === 'error'),
+          hasCritical: warnings.some(w => w.level === 'critical'),
+          warnings
+        };
+      }
+
+    } else if (transaction.type === 'income') {
+      wallet.balance += transaction.amount;
+      await wallet.save();
+
+      // Cập nhật goal progress
       await updateGoalProgressFromTransaction(transaction, req.userId);
     }
 
-    const warning = checkBudgetWarning?.(req.userId, transaction);
     const typeText = finalType === 'income' ? 'thu nhập' : 'chi tiêu';
     let reply = `✅ Đã ghi **${finalAmount.toLocaleString()}đ** ${typeText} vào **${category.name}**`;
     if (billAnalysis.merchant) reply += ` tại **${billAnalysis.merchant}**`;
-    if (warning) reply += `\n\n⚠️ ${warning}`;
+    reply += ` từ ví **${wallet.name}**`;
+    reply += `\nSố dư còn lại: **${wallet.balance.toLocaleString()}đ**`;
+    
+    if (budgetWarnings && budgetWarnings.warnings.length > 0) {
+      reply += '\n\n⚠️ Cảnh báo ngân sách:';
+      budgetWarnings.warnings.forEach(w => {
+        reply += `\n• ${w.message}`;
+      });
+    }
+    if (lowBalanceWarning) {
+      reply += `\n⚠️ Cảnh báo số dư thấp: **${lowBalanceWarning.shortfall.toLocaleString()}đ**`;
+    }
 
     const jokePool = finalType === 'income' ? chat_joke.income : chat_joke.bigSpending;
     const jokeMessage = jokePool?.[Math.floor(Math.random() * jokePool.length)];
@@ -322,14 +460,26 @@ async function handleBillUpload(req, res, uploadedFiles, userMessage) {
       message: reply,
       data: {
         transaction: {
-          id: transaction._id, amount: transaction.amount, type: transaction.type,
+          id: transaction._id,
+          amount: transaction.amount,
+          type: transaction.type,
           category: { id: category._id, name: category.name, type: category.type, image: category.image },
-          description: transaction.description, merchant: billAnalysis.merchant,
-          date: transaction.date, confidence: billAnalysis.confidence
+          description: transaction.description,
+          merchant: billAnalysis.merchant,
+          date: transaction.date,
+          confidence: billAnalysis.confidence,
+          wallet: {
+            id: wallet._id,
+            name: wallet.name,
+            balance: wallet.balance
+          }
         },
+        budgetWarnings: budgetWarnings || null,
+        lowBalanceWarning: lowBalanceWarning || null,
         billImage: { url: billImage.url, thumbnail: billImage.thumbnail, publicId: billImage.publicId },
         voice: voice ? { url: voice.url, publicId: voice.publicId, transcript: billAnalysis.voiceTranscript } : null,
-        items: billAnalysis.items, jokeMessage
+        items: billAnalysis.items,
+        jokeMessage
       }
     });
   } catch (error) {
@@ -432,8 +582,47 @@ async function handleTextChat(req, res, message) {
         reply += `Đã tạo danh mục mới "${data.category_name}". `;
       }
 
+      // Xử lý wallet
+      let wallet = null;
+      let walletId = data.walletId || null;
+
+      if (walletId) {
+        wallet = await Wallet.findOne({
+          _id: walletId,
+          userId: req.userId,
+          isActive: true
+        });
+      }
+
+      if (!wallet) {
+        if (data.type === 'income') {
+          wallet = await getOrCreateDefaultWallet(req.userId);
+        } else if (data.type === 'expense') {
+          wallet = await getOrCreateDefaultExpenseWallet(req.userId);
+        }
+      }
+
+      if (!wallet) {
+        return res.json({
+          reply: 'Không thể tạo hoặc tìm ví để ghi nhận giao dịch. Vui lòng thử lại.'
+        });
+      }
+      let lowBalanceWarning = null;
+      if (data.type === 'expense') {
+        const hasEnoughBalance = await checkWalletBalance(wallet._id, data.amount);
+        if (!hasEnoughBalance) {
+          lowBalanceWarning = {
+            code: 'LOW_BALANCE',
+            walletId: wallet._id,
+            currentBalance: wallet.balance,
+            required: data.amount,
+            shortfall: data.amount - wallet.balance
+          };
+        }
+      }
       const trans = await Transaction.create({
         userId: req.userId,
+        walletId: wallet._id,
         amount: data.amount,
         categoryId: category._id,
         type: data.type,
@@ -445,29 +634,61 @@ async function handleTextChat(req, res, message) {
         confidence: 1.0,
       });
 
+      let budgetWarnings = null;
+
+      if (data.type === 'expense') {
+        wallet.balance -= data.amount;
+        await wallet.save();
+
+        await updateBudgetSpentAmounts(req.userId, trans);
+
+        const warnings = await checkBudgetWarning(req.userId, trans);
+        if (warnings && warnings.length > 0) {
+          budgetWarnings = {
+            count: warnings.length,
+            hasError: warnings.some(w => w.level === 'error'),
+            hasCritical: warnings.some(w => w.level === 'critical'),
+            warnings
+          };
+        }
+
+      } else if (data.type === 'income') {
+        wallet.balance += data.amount;
+        await wallet.save();
+
+        await updateGoalProgressFromTransaction(trans, req.userId);
+      }
+
       transaction = {
+        id: trans._id,
         amount: trans.amount,
         category: {
           id: category._id,
           name: category.name,
+          type: category.type,
+          image: category.image || ''
         },
         type: trans.type,
+        date: trans.date,
+        description: trans.description,
         confidence: 1.0,
+        wallet: {
+          id: wallet._id,
+          name: wallet.name,
+          balance: wallet.balance
+        } || null,
+        budgetWarnings,
+        lowBalanceWarning,
       };
 
       const typeText = data.type === 'income' ? 'thu nhập' : 'chi tiêu';
-      reply += `Đã ghi **${data.amount.toLocaleString()}đ** ${typeText} vào **${category.name}**.`;
-
-      const warning = checkBudgetWarning?.(req.userId, trans);
-      if (warning) reply += `\n${warning}`;
+      reply += `Đã ghi **${data.amount.toLocaleString()}đ** ${typeText} vào **${category.name}**`;
+      reply += ` từ ví **${wallet.name}**`;
+      reply += `\nSố dư còn lại: **${wallet.balance.toLocaleString()}đ**`;
 
       const jokePool = data.type === 'income' ? chat_joke.income : chat_joke.bigSpending;
       if (Array.isArray(jokePool) && jokePool.length) {
         jokeMessage = jokePool[Math.floor(Math.random() * jokePool.length)];
-      }
-
-      if (trans.type === 'income') {
-        await updateGoalProgressFromTransaction(trans, req.userId);
       }
     }
 

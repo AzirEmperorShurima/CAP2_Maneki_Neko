@@ -24,11 +24,11 @@ const budgetSchema = new mongoose.Schema({
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Budget',
         default: null
-    }, // Budget cha (ví dụ: daily budget có parent là monthly budget)
+    },
     isDerived: {
         type: Boolean,
         default: false
-    }, // Budget này có được tự động tạo từ budget cha không
+    },
     familyId: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Family'
@@ -56,12 +56,31 @@ const budgetSchema = new mongoose.Schema({
     spentAmount: {
         type: Number,
         default: 0
-    } // Số tiền đã chi trong kỳ hiện tại
+    },
+    expireAt: {
+        type: Date,
+        required: true
+    }
 }, { timestamps: true });
 
-// Index
+budgetSchema.index({ expireAt: 1 }, { expireAfterSeconds: 0 });
+
 budgetSchema.index({ userId: 1, type: 1, isActive: 1 });
 budgetSchema.index({ userId: 1, parentBudgetId: 1 });
 budgetSchema.index({ familyId: 1 });
+
+budgetSchema.pre('save', function(next) {
+    if (this.isModified('periodEnd')) {
+        this.expireAt = this.periodEnd;
+    }
+    next();
+});
+
+
+budgetSchema.methods.extendPeriod = function(newEndDate) {
+    this.periodEnd = newEndDate;
+    this.expireAt = newEndDate;
+    return this.save();
+};
 
 export default mongoose.model("Budget", budgetSchema);
