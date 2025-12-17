@@ -537,7 +537,6 @@ export const updateBudget = async (req, res) => {
             return res.status(404).json({ error: 'Không tìm thấy ngân sách' });
         }
 
-        // Xử lý thay đổi trạng thái chia sẻ
         if (isShared !== undefined && isShared !== budget.isShared) {
             if (isShared) {
                 const family = await Family.findOne({ _id: bodyFamilyId, adminId: req.userId });
@@ -550,10 +549,7 @@ export const updateBudget = async (req, res) => {
             }
             budget.isShared = isShared;
         }
-
-        // Kiểm tra nếu thay đổi amount và có budget con
         if (amount !== undefined && amount !== budget.amount) {
-            // Nếu là budget cha, kiểm tra tổng budget con
             const childBudgets = await Budget.find({
                 parentBudgetId: id,
                 userId: req.userId,
@@ -600,7 +596,9 @@ export const updateBudget = async (req, res) => {
 
             budget.amount = amount;
         }
-
+        if (name) {
+            budget.name = name || '';
+        }
         if (categoryId !== undefined) {
             budget.categoryId = categoryId || null;
         }

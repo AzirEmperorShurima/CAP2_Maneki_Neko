@@ -10,16 +10,16 @@ export const getBudgetsQuerySchema = Joi.object({
 
 export const validateCreateBudget = (data) => {
   const schema = Joi.object({
-    name: Joi.string().required(),
+    name: Joi.string().optional().allow(''),
     type: Joi.string().valid('daily', 'weekly', 'monthly').required(),
     amount: Joi.number().min(0).required(),
     categoryId: objectId.optional().allow(null),
     familyId: objectId.optional(),
     isShared: Joi.boolean().optional(),
     parentBudgetId: Joi.string().optional().allow(null),
-    periodStart: Joi.date(), // BẮT BUỘC
-    periodEnd: Joi.date(),  // BẮT BUỘC
-    updateIfExists: Joi.boolean().optional().default(false) // Cho phép update budget cũ
+    periodStart: Joi.date(),
+    periodEnd: Joi.date(),
+    updateIfExists: Joi.boolean().optional().default(false)
   });
 
   return schema.validate(data, { abortEarly: false });

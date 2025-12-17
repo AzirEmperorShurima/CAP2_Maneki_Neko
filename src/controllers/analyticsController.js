@@ -5,7 +5,6 @@ import Category from "../models/category.js";
 
 class AnalyticsController {
     constructor() {
-        // Bind all methods to maintain 'this' context
         this.getPersonalOverview = this.getPersonalOverview.bind(this);
         this.getPersonalSpendingTrend = this.getPersonalSpendingTrend.bind(this);
         this.getAnalyticsByWallet = this.getAnalyticsByWallet.bind(this);
@@ -21,7 +20,7 @@ class AnalyticsController {
      */
     _toObjectId(id) {
         return mongoose.Types.ObjectId.isValid(id)
-            ? new mongoose.Types.ObjectId(id)
+            ? new mongoose.Types.ObjectId(String(id))
             : id;
     }
 
@@ -39,19 +38,16 @@ class AnalyticsController {
             ]
         };
 
-        // Date range
         if (startDate || endDate) {
             filter.date = {};
             if (startDate) filter.date.$gte = new Date(startDate);
             if (endDate) filter.date.$lte = new Date(endDate);
         }
 
-        // Wallet filter
         if (walletId) {
             filter.walletId = this._toObjectId(walletId);
         }
 
-        // Transaction type
         if (type) {
             filter.type = type;
         }
@@ -122,7 +118,7 @@ class AnalyticsController {
                 }
             };
 
-            // ===== 2. BREAKDOWN THEO THÁNG/NĂM (NẾU YÊU CẦU) =====
+            // ===== 2. BREAKDOWN THEO THÁNG/NĂM =====
             let periodBreakdown = null;
 
             if (includePeriodBreakdown === 'true') {
@@ -132,11 +128,9 @@ class AnalyticsController {
                 let sortField;
 
                 if (breakdownType === 'year') {
-                    // Group by year
                     groupByFormat = { $year: '$date' };
                     sortField = '_id';
                 } else {
-                    // Group by month (default)
                     groupByFormat = {
                         year: { $year: '$date' },
                         month: { $month: '$date' }
@@ -159,9 +153,7 @@ class AnalyticsController {
                     { $sort: { [sortField]: -1, '_id.period': -1 } }
                 ]);
 
-                // Format breakdown data
                 const formattedBreakdown = {};
-
                 breakdown.forEach(item => {
                     let periodKey;
                     let periodLabel;

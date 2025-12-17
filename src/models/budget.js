@@ -3,7 +3,6 @@ import mongoose from "mongoose";
 const budgetSchema = new mongoose.Schema({
     name: {
         type: String,
-        required: true
     },
     userId: {
         type: mongoose.Schema.Types.ObjectId,
@@ -59,7 +58,6 @@ const budgetSchema = new mongoose.Schema({
     },
     expireAt: {
         type: Date,
-        required: true
     }
 }, { timestamps: true });
 
@@ -69,7 +67,7 @@ budgetSchema.index({ userId: 1, type: 1, isActive: 1 });
 budgetSchema.index({ userId: 1, parentBudgetId: 1 });
 budgetSchema.index({ familyId: 1 });
 
-budgetSchema.pre('save', function(next) {
+budgetSchema.pre('save', function (next) {
     if (this.isModified('periodEnd')) {
         this.expireAt = this.periodEnd;
     }
@@ -77,7 +75,7 @@ budgetSchema.pre('save', function(next) {
 });
 
 
-budgetSchema.methods.extendPeriod = function(newEndDate) {
+budgetSchema.methods.extendPeriod = function (newEndDate) {
     this.periodEnd = newEndDate;
     this.expireAt = newEndDate;
     return this.save();

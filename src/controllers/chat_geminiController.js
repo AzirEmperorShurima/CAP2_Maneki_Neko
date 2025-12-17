@@ -432,8 +432,6 @@ async function handleBillUpload(req, res, uploadedFiles, userMessage) {
     } else if (transaction.type === 'income') {
       wallet.balance += transaction.amount;
       await wallet.save();
-
-      // Cập nhật goal progress
       await updateGoalProgressFromTransaction(transaction, req.userId);
     }
 
@@ -442,7 +440,7 @@ async function handleBillUpload(req, res, uploadedFiles, userMessage) {
     if (billAnalysis.merchant) reply += ` tại **${billAnalysis.merchant}**`;
     reply += ` từ ví **${wallet.name}**`;
     reply += `\nSố dư còn lại: **${wallet.balance.toLocaleString()}đ**`;
-    
+
     if (budgetWarnings && budgetWarnings.warnings.length > 0) {
       reply += '\n\n⚠️ Cảnh báo ngân sách:';
       budgetWarnings.warnings.forEach(w => {
