@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { createFamily, generateInviteLink, sendInviteEmail, joinFamilyWeb, leaveFamily, getFamilyMembers, updateSharingSettings, addSharedResource, removeSharedResource, addFamilyMember, removeFamilyMember, getFamilySpendingSummary, getFamilyUserBreakdown, getFamilyTopCategories, getFamilyTopSpender, dissolveFamily, joinFamilyApp } from "../controllers/familyController.js";
+import { createFamily, generateInviteLink, sendInviteEmail, joinFamilyWeb, leaveFamily, getFamilyMembers, updateSharingSettings, addSharedResource, removeSharedResource, addFamilyMember, removeFamilyMember, getFamilySpendingSummary, getFamilyUserBreakdown, getFamilyTopCategories, getFamilyTopSpender, dissolveFamily, joinFamilyApp, getFamilyProfile } from "../controllers/familyController.js";
 import { jwtAuth } from "../middlewares/auth.js";
 
 const familyRouter = Router();
@@ -14,6 +14,8 @@ familyRouter.get("/", (req, res) => {
 familyRouter.get("/join-web", joinFamilyWeb);
 familyRouter.use(jwtAuth)
 familyRouter.post("/", createFamily);
+familyRouter.get("/profile", getFamilyProfile);
+
 familyRouter.get("/invite-link", generateInviteLink);
 familyRouter.post("/invite", sendInviteEmail);
 familyRouter.post("/join-app", joinFamilyApp);

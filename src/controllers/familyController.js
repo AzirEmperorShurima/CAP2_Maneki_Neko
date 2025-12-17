@@ -94,7 +94,26 @@ export const createFamily = async (req, res) => {
     }
 };
 
+export const getFamilyProfile = async (req, res) => {
 
+    const user = await User.findById(req.userId).select('familyId');
+    if (!user?.familyId) {
+        return res.status(404).json({ error: 'Không tìm thấy gia đình' });
+    }
+
+    const family = await Family.findById(user.familyId)
+        .populate('adminId', 'username email avatar')
+        .populate('members', 'username email avatar');
+    if (!family) {
+        return res.status(404).json({ error: 'Không tìm thấy gia đình' });
+    }
+    const formattedFamily = formatFamilyResponse(family, req.userId);
+
+    res.status(200).json({
+        message: 'Thông tin gia đình',
+        data: formattedFamily
+    });
+}
 export const generateInviteLink = async (req, res) => {
     try {
         const user = await User.findById(req.userId);
