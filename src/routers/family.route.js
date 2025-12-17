@@ -11,7 +11,7 @@ familyRouter.get("/", (req, res) => {
   });
 });
 
-familyRouter.get("/join-web", joinFamilyWeb);
+familyRouter.post("/join-web", joinFamilyWeb);
 familyRouter.use(jwtAuth)
 familyRouter.post("/", createFamily);
 familyRouter.get("/profile", getFamilyProfile);

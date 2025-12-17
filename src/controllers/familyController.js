@@ -707,8 +707,7 @@ export const getFamilySpendingSummary = async (req, res) => {
 
             switch (range.toLowerCase()) {
                 case 'week': {
-                    // Tuần hiện tại (Thứ 2 đến Chủ nhật)
-                    const dayOfWeek = now.getDay(); // 0 = Chủ nhật, 1 = Thứ 2, ...
+                    const dayOfWeek = now.getDay();
                     const diffToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
 
                     startDate = new Date(now);
@@ -779,16 +778,19 @@ export const getFamilySpendingSummary = async (req, res) => {
             endDate.setHours(23, 59, 59, 999);
 
             periodLabel = `Tháng ${now.getMonth() + 1}/${now.getFullYear()}`;
-        } else {
-            // Xử lý startDate và endDate tùy chỉnh
-            if (startDate) {
-                startDate = new Date(startDate);
-                startDate.setHours(0, 0, 0, 0);
+        }
+        else {
+            console.log(startDate, endDate);
+            if (startDate && !endDate || !startDate && endDate) {
+                return res.status(400).json({ error: 'Cần có cả startDate và endDate' });
             }
-            if (endDate) {
-                endDate = new Date(endDate);
-                endDate.setHours(23, 59, 59, 999);
-            }
+            startDate = new Date(startDate);
+            startDate.setUTCHours(0, 0, 0, 0);
+
+            endDate = new Date(endDate);
+            endDate.setUTCHours(23, 59, 59, 999);
+
+            console.log(startDate, endDate);
             periodLabel = 'Tùy chỉnh';
         }
 
