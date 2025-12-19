@@ -422,31 +422,29 @@ export const deleteWallet = async (req, res) => {
 
     const wallet = await Wallet.findById(id).session(session);
     if (!wallet) {
-      throw new Error('Không tìm thấy ví');
+      return res.status(404).json({ message: 'Không tìm thấy ví' });
     }
 
     // Kiểm tra quyền xóa
     if (wallet.isShared && wallet.familyId) {
       const family = await Family.findById(wallet.familyId);
       if (!family || !family.isAdmin(req.userId)) {
-        throw new Error('Chỉ admin gia đình mới có thể xóa ví gia đình');
+        return res.status(403).json({ message: 'Chỉ admin gia đình mới có thể xóa ví gia đình' });
       }
     } else {
       if (!wallet.canUserDelete(req.userId)) {
-        throw new Error('Không thể xóa ví hệ thống này');
+        return res.status(403).json({ message: 'Không thể xóa ví hệ thống' });
       }
     }
 
     const balance = wallet.balance;
     let transferRecord = null;
 
-    // XỬ LÝ SỐ DƯ KHI XÓA
     if (balance !== 0) {
       let targetWallet;
       let transferNote;
 
       if (balance > 0) {
-        // Số dư dương → Quỹ Tiết Kiệm
         targetWallet = await Wallet.getOrCreateDefaultWallet(
           wallet.userId,
           'default_savings',
@@ -492,7 +490,6 @@ export const deleteWallet = async (req, res) => {
       await transferRecord.save({ session });
     }
 
-    // Xóa khỏi family sharedResources
     if (wallet.isShared && wallet.familyId) {
       const family = await Family.findById(wallet.familyId);
       if (family) {

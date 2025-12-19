@@ -111,10 +111,10 @@ export const createTransaction = async (req, res) => {
             }
         } else {
             if (type === 'income') {
-                wallet = await getOrCreateDefaultWallet(req.userId);
+                wallet = await getUserDefaultWallet(req.userId, 'income');
                 walletCreated = true;
             } else if (type === 'expense') {
-                wallet = await getOrCreateDefaultExpenseWallet(req.userId);
+                wallet = await getUserDefaultWallet(req.userId, 'expense');
                 walletCreated = true;
             }
         }
@@ -360,9 +360,9 @@ export const updateTransaction = async (req, res) => {
         if (!finalWallet) {
             // Tạo ví mặc định nếu cần
             if (transaction.type === 'income') {
-                finalWallet = await getOrCreateDefaultWallet(req.userId);
+                finalWallet = await getUserDefaultWallet(req.userId, 'income');
             } else if (transaction.type === 'expense') {
-                finalWallet = await getOrCreateDefaultExpenseWallet(req.userId);
+                finalWallet = await getUserDefaultWallet(req.userId, 'expense');
             }
             if (finalWallet) {
                 transaction.walletId = finalWallet._id;

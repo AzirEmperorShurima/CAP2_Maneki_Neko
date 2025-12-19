@@ -10,7 +10,7 @@ import 'dayjs/locale/vi.js';
 import { checkBudgetWarning, updateBudgetSpentAmounts } from '../utils/budget.js';
 import { SYSTEM_PROMPT } from '../utils/geminiChatPrompt.js';
 import { chat_joke } from '../utils/joke.js';
-import { checkWalletBalance, getOrCreateDefaultExpenseWallet, getOrCreateDefaultWallet } from '../utils/wallet.js';
+import { checkWalletBalance, getOrCreateDefaultExpenseWallet, getUserDefaultWallet } from '../utils/wallet.js';
 
 dayjs.locale('vi');
 
@@ -174,9 +174,9 @@ async function handleVoiceTransaction(req, res, voice, userMessage) {
 
     let wallet = null;
     if (voiceAnalysis.type === 'income') {
-      wallet = await getOrCreateDefaultWallet(req.userId);
+      wallet = await getUserDefaultWallet(req.userId, 'income');
     } else if (voiceAnalysis.type === 'expense') {
-      wallet = await getOrCreateDefaultExpenseWallet(req.userId);
+      wallet = await getUserDefaultWallet(req.userId, 'expense');
     }
 
     if (!wallet) {
@@ -324,7 +324,10 @@ async function handleBillUpload(req, res, uploadedFiles, userMessage) {
         data: {
           isIrrelevant: true,
           billImage: { url: billImage.url, thumbnail: billImage.thumbnail, publicId: billImage.publicId },
-          voice: voice ? { url: voice.url, publicId: voice.publicId, transcript: billAnalysis.voiceTranscript } : null
+          voice: voice ? { url: voice.url, publicId: voice.publicId, transcript: billAnalysis.voiceTranscript } : null,
+          message: 'Neko không hiểu được ảnh này rồi bạn ơi \nCó vẻ ảnh này không liên quan đến bill rồi bạn ơi \n. Vui lòng upload lại ảnh có chứa thông tin bill.\n' +
+            'Hãy chắc chắn rằng ảnh này chứa đầy đủ thông tin về bill, bao gồm số tiền, loại tiền tệ, và tên merchant.\n' +
+            'Ví dụ ảnh bill chuyển khoản ngân hàng , MOMO , ZaloPay.\n'
         }
       });
     }
@@ -335,7 +338,8 @@ async function handleBillUpload(req, res, uploadedFiles, userMessage) {
         data: {
           requireManualInput: true, suggestion: billAnalysis,
           billImage: { url: billImage.url, thumbnail: billImage.thumbnail, publicId: billImage.publicId },
-          voice: voice ? { url: voice.url, publicId: voice.publicId, transcript: billAnalysis.voiceTranscript } : null
+          voice: voice ? { url: voice.url, publicId: voice.publicId, transcript: billAnalysis.voiceTranscript } : null,
+          message: `Oh no! Neko Chỉ đọc được ${(parseFloat(billAnalysis.confidence) * 100).toFixed(0)}%. Vui lòng kiểm tra lại giúp Neko nhé!`,
         }
       });
     }
@@ -359,9 +363,9 @@ async function handleBillUpload(req, res, uploadedFiles, userMessage) {
 
     let wallet = null;
     if (finalType === 'income') {
-      wallet = await getOrCreateDefaultWallet(req.userId);
+      wallet = await getUserDefaultWallet(req.userId, 'income');
     } else if (finalType === 'expense') {
-      wallet = await getOrCreateDefaultExpenseWallet(req.userId);
+      wallet = await getUserDefaultWallet(req.userId, 'expense');
     }
 
     if (!wallet) {
@@ -595,9 +599,9 @@ async function handleTextChat(req, res, message) {
 
       if (!wallet) {
         if (data.type === 'income') {
-          wallet = await getOrCreateDefaultWallet(req.userId);
+          wallet = await getUserDefaultWallet(req.userId, 'income');
         } else if (data.type === 'expense') {
-          wallet = await getOrCreateDefaultExpenseWallet(req.userId);
+          wallet = await getUserDefaultWallet(req.userId, 'expense');
         }
       }
 

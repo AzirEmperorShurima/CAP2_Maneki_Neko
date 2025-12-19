@@ -97,7 +97,7 @@ export const setDefaultWallet = async (userId, walletId) => {
 /**
  * Lấy ví mặc định của user cho transactions (không phải system wallet)
  */
-export const getUserDefaultWallet = async (userId) => {
+export const getUserDefaultWallet = async (userId, transactionType = 'income') => {
     try {
         // Tìm ví personal được đánh dấu là default
         let wallet = await Wallet.findOne({
@@ -118,9 +118,16 @@ export const getUserDefaultWallet = async (userId) => {
             }).sort({ createdAt: 1 });
         }
 
-        // Nếu vẫn không có, tạo ví mặc định nhận tiền
+        // Nếu vẫn không có, tạo ví mặc định dựa theo loại giao dịch
         if (!wallet) {
-            wallet = await getOrCreateDefaultWallet(userId);
+            if (transactionType === 'expense') {
+                wallet = await getOrCreateDefaultExpenseWallet(userId);
+            } else if (transactionType === 'expense') {
+                wallet = await getOrCreateDefaultExpenseWallet(userId);
+            } else {
+                console.error('Loại giao dịch không hợp lệ:', transactionType);
+                return false
+            }
         }
 
         return wallet;
