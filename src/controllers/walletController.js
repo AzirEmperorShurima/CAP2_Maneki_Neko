@@ -416,87 +416,287 @@ export const deleteWallet = async (req, res) => {
     const { error, value } = validateIdParam(req.params);
     if (error) {
       await session.abortTransaction();
-      return res.status(400).json({ error: 'Invalid param', details: error.details.map(d => ({ field: d.path.join('.'), message: d.message })) });
+      return res.status(400).json({ 
+        error: 'Invalid param', 
+        details: error.details.map(d => ({ field: d.path.join('.'), message: d.message })) 
+      });
     }
     const { id } = value;
 
     const wallet = await Wallet.findById(id).session(session);
     if (!wallet) {
+      await session.abortTransaction();
       return res.status(404).json({ message: 'Không tìm thấy ví' });
     }
 
-    // Kiểm tra quyền xóa
+    // KIỂM TRA VÍ TIẾT KIỆM VÀ NỢ - KHÔNG CHO XÓA
+    if (wallet.isSystemWallet && ['default_savings', 'default_debt'].includes(wallet.scope)) {
+      await session.abortTransaction();
+      return res.status(403).json({ 
+        message: `Không thể xóa ví ${wallet.scope === 'default_savings' ? 'Tiết Kiệm' : 'Ghi Nợ'}`,
+        reason: 'Ví này là ví hệ thống bắt buộc để quản lý số dư',
+        suggestion: 'Bạn có thể ẩn ví này bằng cách đặt isActive = false',
+        walletInfo: {
+          name: wallet.name,
+          scope: wallet.scope,
+          balance: wallet.balance,
+          canHide: true,
+          canDelete: false
+        }
+      });
+    }
+
+    // Kiểm tra quyền xóa cho ví thường và ví gia đình
     if (wallet.isShared && wallet.familyId) {
-      const family = await Family.findById(wallet.familyId);
+      const family = await Family.findById(wallet.familyId).session(session);
       if (!family || !family.isAdmin(req.userId)) {
+        await session.abortTransaction();
         return res.status(403).json({ message: 'Chỉ admin gia đình mới có thể xóa ví gia đình' });
       }
     } else {
-      if (!wallet.canUserDelete(req.userId)) {
-        return res.status(403).json({ message: 'Không thể xóa ví hệ thống' });
+      if (!wallet.userId.equals(req.userId)) {
+        await session.abortTransaction();
+        return res.status(403).json({ message: 'Bạn không có quyền xóa ví này' });
       }
     }
 
     const balance = wallet.balance;
     let transferRecord = null;
 
+    // XỬ LÝ CHUYỂN SỐ DƯ
     if (balance !== 0) {
       let targetWallet;
       let transferNote;
 
-      if (balance > 0) {
-        targetWallet = await Wallet.getOrCreateDefaultWallet(
-          wallet.userId,
-          'default_savings',
-          wallet.isShared ? wallet.familyId : null
-        );
-        transferNote = `Tự động chuyển ${balance.toLocaleString('vi-VN')}đ từ ví "${wallet.name}" (${wallet.type || 'không có mục đích'}) vào Quỹ Tiết Kiệm khi xóa`;
+      // VÍ NHẬN TIỀN HOẶC CHI TIÊU MẶC ĐỊNH
+      if (wallet.isSystemWallet && ['default_receive', 'default_expense'].includes(wallet.scope)) {
+        // Số dương → Tiết kiệm, Số âm → Nợ
+        if (balance > 0) {
+          targetWallet = await Wallet.findOne({
+            userId: wallet.userId,
+            scope: 'default_savings',
+            isSystemWallet: true,
+            ...(wallet.isShared ? { familyId: wallet.familyId } : {})
+          }).session(session);
 
-        targetWallet.balance += balance;
-        await targetWallet.save({ session });
+          if (!targetWallet) {
+            const savingsConfig = {
+              name: 'Quỹ Tiết Kiệm',
+              description: 'Ví lưu trữ số dư khi xóa ví',
+              icon: '🏦',
+              type: 'Tiết kiệm'
+            };
 
-      } else {
-        // Số dư âm → Ví Nợ
-        targetWallet = await Wallet.getOrCreateDefaultWallet(
-          wallet.userId,
-          'default_debt',
-          wallet.isShared ? wallet.familyId : null
-        );
-        transferNote = `Tự động ghi nợ ${Math.abs(balance).toLocaleString('vi-VN')}đ từ ví "${wallet.name}" (${wallet.type || 'không có mục đích'}) vào Ví Ghi Nợ khi xóa`;
+            targetWallet = new Wallet({
+              userId: wallet.userId,
+              familyId: wallet.isShared ? wallet.familyId : null,
+              name: savingsConfig.name,
+              scope: 'default_savings',
+              type: savingsConfig.type,
+              balance: 0,
+              icon: savingsConfig.icon,
+              isDefault: true,
+              isSystemWallet: true,
+              canDelete: false,
+              isShared: wallet.isShared,
+              description: savingsConfig.description,
+              accessControl: wallet.isShared ? {
+                canView: [],
+                canTransact: []
+              } : undefined
+            });
 
-        targetWallet.balance += balance;
-        await targetWallet.save({ session });
-      }
+            await targetWallet.save({ session });
+            console.log(`✅ Created default_savings wallet for user ${wallet.userId}`);
+          }
 
-      // Lưu lịch sử transfer
-      transferRecord = new WalletTransfer({
-        fromWalletId: wallet._id,
-        toWalletId: targetWallet._id,
-        amount: Math.abs(balance),
-        initiatedBy: req.userId,
-        type: 'system_auto_transfer',
-        status: 'completed',
-        note: transferNote,
-        isSystemTransfer: true,
-        metadata: {
-          fromWalletName: wallet.name,
-          toWalletName: targetWallet.name,
-          fromWalletBalance: 0,
-          toWalletBalance: targetWallet.balance,
-          reason: 'wallet_deletion'
+          transferNote = `Tự động chuyển ${balance.toLocaleString('vi-VN')}đ từ ví "${wallet.name}" (${wallet.scope}) vào Quỹ Tiết Kiệm khi xóa`;
+
+        } else { // balance < 0
+          targetWallet = await Wallet.findOne({
+            userId: wallet.userId,
+            scope: 'default_debt',
+            isSystemWallet: true,
+            ...(wallet.isShared ? { familyId: wallet.familyId } : {})
+          }).session(session);
+
+          if (!targetWallet) {
+            const debtConfig = {
+              name: 'Ví Ghi Nợ',
+              description: 'Ghi nhận các khoản chi vượt quá số dư',
+              icon: '📋',
+              type: 'Ghi nợ'
+            };
+
+            targetWallet = new Wallet({
+              userId: wallet.userId,
+              familyId: wallet.isShared ? wallet.familyId : null,
+              name: debtConfig.name,
+              scope: 'default_debt',
+              type: debtConfig.type,
+              balance: 0,
+              icon: debtConfig.icon,
+              isDefault: true,
+              isSystemWallet: true,
+              canDelete: false,
+              isShared: wallet.isShared,
+              description: debtConfig.description,
+              accessControl: wallet.isShared ? {
+                canView: [],
+                canTransact: []
+              } : undefined
+            });
+
+            await targetWallet.save({ session });
+            console.log(`✅ Created default_debt wallet for user ${wallet.userId}`);
+          }
+
+          transferNote = `Tự động ghi nợ ${Math.abs(balance).toLocaleString('vi-VN')}đ từ ví "${wallet.name}" (${wallet.scope}) vào Ví Ghi Nợ khi xóa`;
         }
-      });
 
-      await transferRecord.save({ session });
+        targetWallet.balance += balance;
+        await targetWallet.save({ session });
+
+        transferRecord = new WalletTransfer({
+          fromWalletId: wallet._id,
+          toWalletId: targetWallet._id,
+          amount: Math.abs(balance),
+          initiatedBy: req.userId,
+          type: 'system_auto_transfer',
+          status: 'completed',
+          note: transferNote,
+          isSystemTransfer: true,
+          metadata: {
+            fromWalletName: wallet.name,
+            fromWalletScope: wallet.scope,
+            toWalletName: targetWallet.name,
+            toWalletScope: targetWallet.scope,
+            fromWalletBalance: 0,
+            toWalletBalance: targetWallet.balance,
+            reason: 'system_wallet_deletion'
+          }
+        });
+
+        await transferRecord.save({ session });
+      }
+      // VÍ THƯỜNG (PERSONAL/FAMILY KHÔNG PHẢI SYSTEM)
+      else if (!wallet.isSystemWallet) {
+        if (balance > 0) {
+          targetWallet = await Wallet.findOne({
+            userId: wallet.userId,
+            scope: 'default_savings',
+            isSystemWallet: true,
+            ...(wallet.isShared ? { familyId: wallet.familyId } : {})
+          }).session(session);
+
+          if (!targetWallet) {
+            const savingsConfig = {
+              name: 'Quỹ Tiết Kiệm',
+              description: 'Ví lưu trữ số dư khi xóa ví',
+              icon: '🏦',
+              type: 'Tiết kiệm'
+            };
+
+            targetWallet = new Wallet({
+              userId: wallet.userId,
+              familyId: wallet.isShared ? wallet.familyId : null,
+              name: savingsConfig.name,
+              scope: 'default_savings',
+              type: savingsConfig.type,
+              balance: 0,
+              icon: savingsConfig.icon,
+              isDefault: true,
+              isSystemWallet: true,
+              canDelete: false,
+              isShared: wallet.isShared,
+              description: savingsConfig.description,
+              accessControl: wallet.isShared ? {
+                canView: [],
+                canTransact: []
+              } : undefined
+            });
+
+            await targetWallet.save({ session });
+          }
+
+          transferNote = `Tự động chuyển ${balance.toLocaleString('vi-VN')}đ từ ví "${wallet.name}" (${wallet.type || 'không có mục đích'}) vào Quỹ Tiết Kiệm khi xóa`;
+          targetWallet.balance += balance;
+          await targetWallet.save({ session });
+
+        } else {
+          targetWallet = await Wallet.findOne({
+            userId: wallet.userId,
+            scope: 'default_debt',
+            isSystemWallet: true,
+            ...(wallet.isShared ? { familyId: wallet.familyId } : {})
+          }).session(session);
+
+          if (!targetWallet) {
+            const debtConfig = {
+              name: 'Ví Ghi Nợ',
+              description: 'Ghi nhận các khoản chi vượt quá số dư',
+              icon: '📋',
+              type: 'Ghi nợ'
+            };
+
+            targetWallet = new Wallet({
+              userId: wallet.userId,
+              familyId: wallet.isShared ? wallet.familyId : null,
+              name: debtConfig.name,
+              scope: 'default_debt',
+              type: debtConfig.type,
+              balance: 0,
+              icon: debtConfig.icon,
+              isDefault: true,
+              isSystemWallet: true,
+              canDelete: false,
+              isShared: wallet.isShared,
+              description: debtConfig.description,
+              accessControl: wallet.isShared ? {
+                canView: [],
+                canTransact: []
+              } : undefined
+            });
+
+            await targetWallet.save({ session });
+          }
+
+          transferNote = `Tự động ghi nợ ${Math.abs(balance).toLocaleString('vi-VN')}đ từ ví "${wallet.name}" (${wallet.type || 'không có mục đích'}) vào Ví Ghi Nợ khi xóa`;
+          targetWallet.balance += balance;
+          await targetWallet.save({ session });
+        }
+
+        transferRecord = new WalletTransfer({
+          fromWalletId: wallet._id,
+          toWalletId: targetWallet._id,
+          amount: Math.abs(balance),
+          initiatedBy: req.userId,
+          type: 'system_auto_transfer',
+          status: 'completed',
+          note: transferNote,
+          isSystemTransfer: true,
+          metadata: {
+            fromWalletName: wallet.name,
+            toWalletName: targetWallet.name,
+            fromWalletBalance: 0,
+            toWalletBalance: targetWallet.balance,
+            reason: 'wallet_deletion'
+          }
+        });
+
+        await transferRecord.save({ session });
+      }
     }
 
+    // Xóa khỏi family nếu là ví chia sẻ
     if (wallet.isShared && wallet.familyId) {
-      const family = await Family.findById(wallet.familyId);
+      const family = await Family.findById(wallet.familyId).session(session);
       if (family) {
         await family.removeSharedResource('wallets', wallet._id);
       }
     }
 
+    // XÓA VÍ
     await Wallet.deleteOne({ _id: id }).session(session);
 
     await session.commitTransaction();
@@ -507,6 +707,7 @@ export const deleteWallet = async (req, res) => {
         name: wallet.name,
         type: wallet.type,
         scope: wallet.scope,
+        isSystemWallet: wallet.isSystemWallet,
         balanceTransferred: balance !== 0 ? {
           amount: Math.abs(balance),
           to: balance > 0 ? 'Quỹ Tiết Kiệm' : 'Ví Ghi Nợ',
@@ -521,6 +722,45 @@ export const deleteWallet = async (req, res) => {
     res.status(400).json({ error: error.message || 'Lỗi khi xóa ví' });
   } finally {
     session.endSession();
+  }
+};
+
+// Thêm API để ẩn/hiện ví (cho Savings và Debt wallet)
+export const toggleWalletVisibility = async (req, res) => {
+  try {
+    const { error, value } = validateIdParam(req.params);
+    if (error) {
+      return res.status(400).json({ error: 'Invalid param' });
+    }
+    const { id } = value;
+
+    const wallet = await Wallet.findById(id);
+    if (!wallet) {
+      return res.status(404).json({ message: 'Không tìm thấy ví' });
+    }
+
+    // Kiểm tra quyền
+    if (!wallet.userId.equals(req.userId)) {
+      return res.status(403).json({ message: 'Bạn không có quyền thay đổi ví này' });
+    }
+
+    wallet.isActive = !wallet.isActive;
+    await wallet.save();
+
+    res.json({
+      message: wallet.isActive ? 'Đã hiện ví' : 'Đã ẩn ví',
+      data: {
+        _id: wallet._id,
+        name: wallet.name,
+        scope: wallet.scope,
+        isActive: wallet.isActive,
+        balance: wallet.balance
+      }
+    });
+
+  } catch (error) {
+    console.error('Lỗi toggle visibility:', error);
+    res.status(400).json({ error: error.message });
   }
 };
 

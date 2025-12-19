@@ -1180,7 +1180,7 @@ export const getFamilyTopCategories = async (req, res) => {
             if (endDate) match.date.$lte = new Date(endDate);
         }
 
-        console.log('Match condition:', JSON.stringify(match, null, 2));
+        // console.log('Match condition:', JSON.stringify(match, null, 2));
 
         // Aggregate để lấy top categories
         const topCategories = await Transaction.aggregate([
@@ -1218,6 +1218,9 @@ export const getFamilyTopCategories = async (req, res) => {
                     },
                     categoryName: {
                         $ifNull: ['$categoryInfo.name', 'Không phân loại']
+                    },
+                    categoryImage: {
+                        $ifNull: ['$categoryInfo.image', null]
                     },
                     total: 1,
                     count: 1,
