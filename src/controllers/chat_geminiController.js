@@ -477,7 +477,8 @@ async function handleBillUpload(req, res, uploadedFiles, userMessage) {
         billImage: { url: billImage.url, thumbnail: billImage.thumbnail, publicId: billImage.publicId },
         voice: voice ? { url: voice.url, publicId: voice.publicId, transcript: billAnalysis.voiceTranscript } : null,
         items: billAnalysis.items,
-        jokeMessage
+        jokeMessage,
+        message: reply || ""
       }
     });
   } catch (error) {

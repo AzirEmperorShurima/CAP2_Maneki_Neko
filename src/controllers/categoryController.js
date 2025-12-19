@@ -130,10 +130,11 @@ export const getCategories = async (req, res) => {
 
 export const getCategoryImages = async (req, res) => {
     try {
-        // Lấy folder từ query, nếu là 'root' hoặc rỗng thì không dùng prefix
-        const folder = req.query.folder && typeof req.query.folder === 'string'
+        let folder = req.query.folder && typeof req.query.folder === 'string'
             ? req.query.folder.trim()
-            : '';
+            : 'root';
+
+        if (folder === '') folder = 'root';
 
         const maxResults = req.query.limit && Number(req.query.limit) > 0
             ? Math.min(Number(req.query.limit), 500)
@@ -141,57 +142,58 @@ export const getCategoryImages = async (req, res) => {
 
         const nextCursor = req.query.next_cursor;
 
-        // Cấu hình request
-        const requestOptions = {
-            type: 'upload',
+        // Xây dựng expression cho Search API
+        let expression = 'resource_type:image';
+        if (folder !== 'root') {
+            expression += ` AND folder:"${folder}"`;  // Exact folder match
+        } else {
+            expression += ' AND folder:""';  // Root exact
+        }
+
+        const searchOptions = {
+            expression,
             max_results: maxResults,
-            resource_type: 'image',
         };
 
-        // Chỉ thêm prefix nếu folder không rỗng và không phải 'root'
-        if (folder && folder !== 'root') {
-            requestOptions.prefix = `${folder}/`;
-        }
-
         if (nextCursor) {
-            requestOptions.next_cursor = nextCursor;
+            searchOptions.next_cursor = nextCursor;
         }
 
-        console.log('Cloudinary request options:', requestOptions);
+        console.log('Cloudinary search expression:', expression);
 
-        // Gọi Cloudinary API
-        const result = await cloudinary.api.resources(requestOptions);
+        // Sử dụng Search API (cloudinary.search thay vì api.resources)
+        const result = await cloudinary.search
+            .expression(expression)
+            .max_results(maxResults)
+            .next_cursor(nextCursor)
+            .execute();
 
-        console.log('Cloudinary found:', result.resources.length, 'images');
+        console.log('Cloudinary found:', result.resources?.length || 0, 'images');
 
-        // Xử lý dữ liệu
         const images = (result.resources || []).map(r => ({
             publicId: r.public_id,
             url: r.secure_url || r.url,
-            thumbnail: r.secure_url ?
-                r.secure_url.replace('/upload/', '/upload/w_300,h_300,c_fill/') :
-                null,
+            thumbnail: r.secure_url
+                ? r.secure_url.replace('/upload/', '/upload/w_300,h_300,c_fill/')
+                : (r.url ? r.url.replace('/upload/', '/upload/w_300,h_300,c_fill/') : null),
             format: r.format,
             bytes: r.bytes,
             width: r.width,
             height: r.height,
             createdAt: r.created_at,
-            // Xác định folder từ public_id
-            folder: r.public_id.includes('/')
-                ? r.public_id.split('/').slice(0, -1).join('/')
-                : 'root',
-            filename: r.public_id.split('/').pop()
+            folder: r.folder || 'root',  // Search API có field folder trực tiếp!
+            filename: r.filename || r.public_id.split('/').pop()
         }));
 
         res.json({
             success: true,
             message: images.length > 0
-                ? `Tìm thấy ${images.length} ảnh`
-                : 'Không tìm thấy ảnh',
+                ? `Tìm thấy ${images.length} ảnh trong folder '${folder}'`
+                : `Không tìm thấy ảnh trong folder '${folder}'`,
             data: {
                 images,
-                total: images.length,
-                folder: folder || 'root',
+                total: images.length,  // Per page
+                folder,
                 nextCursor: result.next_cursor || null,
                 hasMore: !!result.next_cursor
             }
@@ -200,10 +202,10 @@ export const getCategoryImages = async (req, res) => {
     } catch (err) {
         console.error('getCategoryImages error:', err);
 
-        if (err.error && err.error.http_code === 404) {
+        if (err?.error?.http_code === 400 || err.message.includes('expression')) {
             return res.status(404).json({
                 success: false,
-                error: `Không tìm thấy folder '${req.query.folder}' trên Cloudinary`
+                error: `Folder '${req.query.folder || 'root'}' không hợp lệ hoặc không tồn tại`
             });
         }
 
